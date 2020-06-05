@@ -2,7 +2,7 @@ name: CI
 
 on: [push, pull_request]
 
-jobs:
+.jobs:
 
   test-ubuntu-latest:
     runs-on: ubuntu-latest
