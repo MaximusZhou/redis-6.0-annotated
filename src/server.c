@@ -3139,6 +3139,9 @@ struct redisCommand *lookupCommandOrOriginal(sds name) {
  * command execution, for example when serving a blocked client, you
  * want to use propagate().
  */
+/*
+ * 把需要同步的命令操作同步到AOF和副本
+ */
 void propagate(struct redisCommand *cmd, int dbid, robj **argv, int argc,
                int flags)
 {
@@ -3238,12 +3241,15 @@ void preventCommandReplication(client *c) {
  * preventCommandReplication(client *c);
  *
  */
+/* 执行redis命令的总的入口，执行收到客户端命令的时候，flags值为 CMD_CALL_FULL */
 void call(client *c, int flags) {
     long long dirty;
     ustime_t start, duration;
     int client_old_flags = c->flags;
     struct redisCommand *real_cmd = c->cmd;
 
+	/* 执行命令时候，用缓存的时间，用来检测key是否过期，就用缓存的时间
+	 * 防止在同一条命令中，多次访问同一个key，第一次访问的时候，还是有效的，再次访问就无效了 */
     server.fixed_time_expire++;
 
     /* Send the command to clients in MONITOR mode if applicable.
@@ -3263,6 +3269,7 @@ void call(client *c, int flags) {
 
     /* Call the command. */
     dirty = server.dirty;
+	/* 执行命令前，更新一下时间缓存，执行命令用缓存的时间 */
     updateCachedTime(0);
     start = server.ustime;
     c->cmd->proc(c);
@@ -3290,7 +3297,9 @@ void call(client *c, int flags) {
     if (flags & CMD_CALL_SLOWLOG && !(c->cmd->flags & CMD_SKIP_SLOWLOG)) {
         char *latency_event = (c->cmd->flags & CMD_FAST) ?
                               "fast-command" : "command";
+		/* 统计信息，供命令查询 */
         latencyAddSampleIfNeeded(latency_event,duration/1000);
+		/* 增加slowlog */
         slowlogPushEntryIfNeeded(c,c->argv,c->argc,duration);
     }
 
@@ -3303,6 +3312,7 @@ void call(client *c, int flags) {
     }
 
     /* Propagate the command into the AOF and replication link */
+	/* 把命令执行同步到 AOF和副本中 */
     if (flags & CMD_CALL_PROPAGATE &&
         (c->flags & CLIENT_PREVENT_PROP) != CLIENT_PREVENT_PROP)
     {
@@ -3310,16 +3320,19 @@ void call(client *c, int flags) {
 
         /* Check if the command operated changes in the data set. If so
          * set for replication / AOF propagation. */
+		/* 有修改数据库数据的操作，才同步到AOF和副本中，比如查询命令，当然不需要*/
         if (dirty) propagate_flags |= (PROPAGATE_AOF|PROPAGATE_REPL);
 
         /* If the client forced AOF / replication of the command, set
          * the flags regardless of the command effects on the data set. */
+		/* 客户端标记强制同步 */
         if (c->flags & CLIENT_FORCE_REPL) propagate_flags |= PROPAGATE_REPL;
         if (c->flags & CLIENT_FORCE_AOF) propagate_flags |= PROPAGATE_AOF;
 
         /* However prevent AOF / replication propagation if the command
          * implementations called preventCommandPropagation() or similar,
          * or if we don't have the call() flags to do so. */
+		/* 客户端标记强制不能同步操作，或者参数flags要求不同步 */
         if (c->flags & CLIENT_PREVENT_REPL_PROP ||
             !(flags & CMD_CALL_PROPAGATE_REPL))
                 propagate_flags &= ~PROPAGATE_REPL;
@@ -3406,23 +3419,37 @@ void call(client *c, int flags) {
  * If C_OK is returned the client is still alive and valid and
  * other operations can be performed by the caller. Otherwise
  * if C_ERR is returned the client was destroyed (i.e. after QUIT). */
+/*
+ * 这个接口执行客户端中已经准备好的命令参数，即在argv/argc中的内容，
+ * 如果执行命令后，客户端还是alive和有效的，则返回C_OK，
+ * 如果返回C_ERR，则表示客户端将被close掉，比如QUIT命令
+ */
 int processCommand(client *c) {
+	/* 预处理一下命令参数，即调用moduel注册的函数，对argv/argc再处理一下，
+	 * 然后根据最新的参数再执行相应的命令 */
     moduleCallCommandFilters(c);
 
     /* The QUIT command is handled separately. Normal command procs will
      * go through checking for replication and QUIT will cause trouble
      * when FORCE_REPLICATION is enabled and would be implemented in
      * a regular command proc. */
+	/* 单独处理quit命令，因为通常命令处理会传递给副本，
+	 * 如果开启FORCE_REPLICATION，QUIT将会触发一些问题 */
     if (!strcasecmp(c->argv[0]->ptr,"quit")) {
         addReply(c,shared.ok);
+
+		 /* 在writeToClient中判断这个这个flag，释放客户端连接和相关数据，
+		  * 即在回复最后的数据时候，触发关闭客户端相关的逻辑 */
         c->flags |= CLIENT_CLOSE_AFTER_REPLY;
         return C_ERR;
     }
 
     /* Now lookup the command and check ASAP about trivial error conditions
      * such as wrong arity, bad command name and so forth. */
+	/* 通过命令名字查找相应的命令处理结构体redisCommand */
     c->cmd = c->lastcmd = lookupCommand(c->argv[0]->ptr);
     if (!c->cmd) {
+		/* 参数名不对 */
         flagTransaction(c);
         sds args = sdsempty();
         int i;
@@ -3434,12 +3461,14 @@ int processCommand(client *c) {
         return C_OK;
     } else if ((c->cmd->arity > 0 && c->cmd->arity != c->argc) ||
                (c->argc < -c->cmd->arity)) {
+		/* 参数个数不对 */
         flagTransaction(c);
         addReplyErrorFormat(c,"wrong number of arguments for '%s' command",
             c->cmd->name);
         return C_OK;
     }
 
+	/* 权限检查 */
     /* Check if the user is authenticated. This check is skipped in case
      * the default user is flagged as "nopass" and is active. */
     int auth_required = (!(DefaultUser->flags & USER_FLAG_NOPASS) ||
@@ -3640,10 +3669,12 @@ int processCommand(client *c) {
     }
 
     /* Exec the command */
+	/* 各种条件判断后，真正开始执行命令 */
     if (c->flags & CLIENT_MULTI &&
         c->cmd->proc != execCommand && c->cmd->proc != discardCommand &&
         c->cmd->proc != multiCommand && c->cmd->proc != watchCommand)
     {
+		/* 事务处理，多条命令，先放到队列中 */
         queueMultiCommand(c);
         addReply(c,shared.queued);
     } else {

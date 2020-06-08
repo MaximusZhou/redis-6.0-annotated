@@ -248,6 +248,7 @@ int prepareClientToWrite(client *c) {
 int _addReplyToBuffer(client *c, const char *s, size_t len) {
     size_t available = sizeof(c->buf)-c->bufpos;
 
+	/* 设置了CLIENT_CLOSE_AFTER_REPL，表示不能再向这个客户端发送数据了 */
     if (c->flags & CLIENT_CLOSE_AFTER_REPLY) return C_OK;
 
     /* If there already are entries in the reply list, we cannot
@@ -1416,6 +1417,7 @@ int handleClientsWithPendingWrites(void) {
 }
 
 /* resetClient prepare the client to process the next command */
+/* 为处理下一次命令做准备，清理和初始化相关数据，比如请求类型reqtype, 参数个数multibulklen*/
 void resetClient(client *c) {
     redisCommandProc *prevcmd = c->cmd ? c->cmd->proc : NULL;
 
@@ -1480,17 +1482,29 @@ void unprotectClient(client *c) {
  * have a well formed command. The function also returns C_ERR when there is
  * a protocol error: in such a case the client structure is setup to reply
  * with the error and close the connection. */
+/*
+ * 这个接口处理，客户端inline protocol方式通信，而不是RESP方式协议，
+ * 比如telnet连上服务器通信，也可以使用这种方式.
+ * 这个函数处理客户端 query buffer中的数据，然后构造command放到client结构体argv中，
+ * 为接下来执行命令做准备。如果命令准备好执行了，即客户端发过来的命令完整，可以执行了，
+ * 则返回C_OK，否则返回C_ERR，表示还需要进一步读取相关的数据（比如从网络上）才能构造完整的命令，
+ * 如果解析buff数据时候错误，也返回C_ERR，并且调用接口setProtocolError设置客户端flags，
+ * 增加CLIENT_CLOSE_AFTER_REPLY，即关闭客户端
+ */
 int processInlineBuffer(client *c) {
     char *newline;
     int argc, j, linefeed_chars = 1;
     sds *argv, aux;
     size_t querylen;
 
+	/* 每条命令以\n 或者 \r\n 分隔*/
+
     /* Search for end of line */
     newline = strchr(c->querybuf+c->qb_pos,'\n');
 
     /* Nothing to do without a \r\n */
     if (newline == NULL) {
+		/* 数据还没完全读取到querybuf，等待下一次从网络上读取数据 */
         if (sdslen(c->querybuf)-c->qb_pos > PROTO_INLINE_MAX_SIZE) {
             addReplyError(c,"Protocol error: too big inline request");
             setProtocolError("too big inline request",c);
@@ -1499,12 +1513,17 @@ int processInlineBuffer(client *c) {
     }
 
     /* Handle the \r\n case. */
+	/* 处理是\r\n的情况 */
     if (newline && newline != c->querybuf+c->qb_pos && *(newline-1) == '\r')
         newline--, linefeed_chars++;
 
     /* Split the input buffer up to the \r\n */
+
+	/* 计算当前请求命令对应的长度，不包括\r\n字符 */
     querylen = newline-(c->querybuf+c->qb_pos);
     aux = sdsnewlen(c->querybuf+c->qb_pos,querylen);
+
+	/* 把aux字符串分割为参数，参数的个数保存在argc中 */
     argv = sdssplitargs(aux,&argc);
     sdsfree(aux);
     if (argv == NULL) {
@@ -1516,6 +1535,7 @@ int processInlineBuffer(client *c) {
     /* Newline from slaves can be used to refresh the last ACK time.
      * This is useful for a slave to ping back while loading a big
      * RDB file. */
+	/* salve 发送给master的心跳包，只有一个换行符，作为 ping back，刷新最近的ack时间 */
     if (querylen == 0 && getClientType(c) == CLIENT_TYPE_SLAVE)
         c->repl_ack_time = server.unixtime;
 
@@ -1533,6 +1553,7 @@ int processInlineBuffer(client *c) {
     }
 
     /* Move querybuffer position to the next query in the buffer. */
+	/* 移动查询buff中要处理数据的位置，方便处理下一个查询 */
     c->qb_pos += querylen+linefeed_chars;
 
     /* Setup argv array on client structure */
@@ -1542,6 +1563,9 @@ int processInlineBuffer(client *c) {
     }
 
     /* Create redis objects for all arguments. */
+
+	/* 把查询命令所有的参数构造为一个 redis object对象保存到客户端字段argv中，
+	 * 后面执行命令相关的参数就从字段argv中获取 */
     for (c->argc = 0, j = 0; j < argc; j++) {
         c->argv[c->argc] = createObject(OBJ_STRING,argv[j]);
         c->argc++;
@@ -1594,12 +1618,24 @@ static void setProtocolError(const char *errstr, client *c) {
  * This function is called if processInputBuffer() detects that the next
  * command is in RESP format, so the first byte in the command is found
  * to be '*'. Otherwise for inline commands processInlineBuffer() is called. */
+/*
+ * 这个接口处理，以RESP方式协议通信方式（以*开头就认为后面读取的数据以RESP方式通信），
+ * 根据resp2协议，正常的客户端驱动发送过来的数据都是 array of bulk strings
+ * 比如redis-cli输入的命令就转换为RESP协议格式发送给服务端处理.
+ * 这个函数处理客户端 query buffer中的数据，然后构造command放到client结构体argv中，
+ * 为接下来执行命令做准备。如果命令准备好执行了，即客户端发过来的命令完整，可以执行了，
+ * 则返回C_OK，否则返回C_ERR，表示还需要进一步读取相关的数据（比如从网络上）才能构造完整的命令,
+ * 或者协议错误了，也返回C_ERR，这时候设置错误信息到客户端结构体中用于返回，然后关闭链接
+ *
+ * 实质上，本接口主要工作都是按照RESP协议格式来解析相关的参数，然后放到客户端结构体argv字段中
+ */
 int processMultibulkBuffer(client *c) {
     char *newline = NULL;
     int ok;
     long long ll;
 
     if (c->multibulklen == 0) {
+		/* 计算数组的长度，包括命令本身，即多少个bulk stings 需要读取 */
         /* The client should have been reset */
         serverAssertWithInfo(c,NULL,c->argc == 0);
 
@@ -1614,6 +1650,7 @@ int processMultibulkBuffer(client *c) {
         }
 
         /* Buffer should also contain \n */
+		/* 按resp要求，应该要包括\n字符，做一个容错检测 */
         if (newline-(c->querybuf+c->qb_pos) > (ssize_t)(sdslen(c->querybuf)-c->qb_pos-2))
             return C_ERR;
 
@@ -1627,11 +1664,11 @@ int processMultibulkBuffer(client *c) {
             return C_ERR;
         }
 
-        c->qb_pos = (newline-c->querybuf)+2;
+        c->qb_pos = (newline-c->querybuf)+2; /* +2是因为 \r\n两个分隔符 */
 
         if (ll <= 0) return C_OK;
 
-        c->multibulklen = ll;
+        c->multibulklen = ll; /* 数组的长度，即命令和参数一共元素的个数 */
 
         /* Setup argv array on client structure */
         if (c->argv) zfree(c->argv);
@@ -1639,11 +1676,15 @@ int processMultibulkBuffer(client *c) {
     }
 
     serverAssertWithInfo(c,NULL,c->multibulklen > 0);
+	/* multibulklen表示需要从querybuf解析多少个bulk数据 */
     while(c->multibulklen) {
         /* Read bulk length if unknown */
+		/* 读取每一个 bulk strings */
         if (c->bulklen == -1) {
+			/* 计算当前bulk类型的长度 */
             newline = strchr(c->querybuf+c->qb_pos,'\r');
             if (newline == NULL) {
+				/* 还没有读取完，等待从网络上进一步读取数据 */
                 if (sdslen(c->querybuf)-c->qb_pos > PROTO_INLINE_MAX_SIZE) {
                     addReplyError(c,
                         "Protocol error: too big bulk count string");
@@ -1657,6 +1698,7 @@ int processMultibulkBuffer(client *c) {
             if (newline-(c->querybuf+c->qb_pos) > (ssize_t)(sdslen(c->querybuf)-c->qb_pos-2))
                 break;
 
+			/* 容错检测，bulk 类型必须是以$开头 */
             if (c->querybuf[c->qb_pos] != '$') {
                 addReplyErrorFormat(c,
                     "Protocol error: expected '$', got '%c'",
@@ -1665,6 +1707,7 @@ int processMultibulkBuffer(client *c) {
                 return C_ERR;
             }
 
+			/* c->querybuf+c->qb_pos+1，需要加1，是为了跳过$字符 */
             ok = string2ll(c->querybuf+c->qb_pos+1,newline-(c->querybuf+c->qb_pos+1),&ll);
             if (!ok || ll < 0 || ll > server.proto_max_bulk_len) {
                 addReplyError(c,"Protocol error: invalid bulk length");
@@ -1684,6 +1727,7 @@ int processMultibulkBuffer(client *c) {
                  * ll+2, trimming querybuf is just a waste of time, because
                  * at this time the querybuf contains not only our bulk. */
                 if (sdslen(c->querybuf)-c->qb_pos <= (size_t)ll+2) {
+					/* querybuf剩下的空间放不下这么多数据，增加空间，并且把剩余要处理的数据移到到开始位置 */
                     sdsrange(c->querybuf,c->qb_pos,-1);
                     c->qb_pos = 0;
                     /* Hint the sds library about the amount of bytes this string is
@@ -1695,8 +1739,10 @@ int processMultibulkBuffer(client *c) {
         }
 
         /* Read bulk argument */
+		/* 多个bulk参数，能从querybuf中，解析多少参数出来，就解析多少 */
         if (sdslen(c->querybuf)-c->qb_pos < (size_t)(c->bulklen+2)) {
             /* Not enough data (+2 == trailing \r\n) */
+			/* 还要继续从网络上读数据 */
             break;
         } else {
             /* Optimization: if the buffer contains JUST our bulk element
@@ -1706,6 +1752,7 @@ int processMultibulkBuffer(client *c) {
                 c->bulklen >= PROTO_MBULK_BIG_ARG &&
                 sdslen(c->querybuf) == (size_t)(c->bulklen+2))
             {
+				/* 减少对大参数的拷贝，直接用之前的qurybuf的空间 */
                 c->argv[c->argc++] = createObject(OBJ_STRING,c->querybuf);
                 sdsIncrLen(c->querybuf,-2); /* remove CRLF */
                 /* Assume that if we saw a fat argument we'll see another one
@@ -1713,6 +1760,7 @@ int processMultibulkBuffer(client *c) {
                 c->querybuf = sdsnewlen(SDS_NOINIT,c->bulklen+2);
                 sdsclear(c->querybuf);
             } else {
+				/* 这个地方是对参数的拷贝，来构造参数的 */
                 c->argv[c->argc++] =
                     createStringObject(c->querybuf+c->qb_pos,c->bulklen);
                 c->qb_pos += c->bulklen+2;
@@ -1726,6 +1774,7 @@ int processMultibulkBuffer(client *c) {
     if (c->multibulklen == 0) return C_OK;
 
     /* Still not ready to process the command */
+	/* 仍然还有参数需要从网络上读取 */
     return C_ERR;
 }
 
@@ -1734,10 +1783,14 @@ int processMultibulkBuffer(client *c) {
  * 1. The client is reset unless there are reasons to avoid doing it.
  * 2. In the case of master clients, the replication offset is updated.
  * 3. Propagate commands we got from our master to replicas down the line. */
+/*
+ * 成功执行完一个命令后，调用的函数
+ */
 void commandProcessed(client *c) {
     long long prev_offset = c->reploff;
     if (c->flags & CLIENT_MASTER && !(c->flags & CLIENT_MULTI)) {
         /* Update the applied replication offset of our master. */
+		/* 更新offset */
         c->reploff = c->read_reploff - sdslen(c->querybuf) + c->qb_pos;
     }
 
@@ -1775,6 +1828,10 @@ void commandProcessed(client *c) {
  *
  * The function returns C_ERR in case the client was freed as a side effect
  * of processing the command, otherwise C_OK is returned. */
+
+/*
+ * 这个接口真正执行命令了，通过调用接口processCommand来做的
+ */
 int processCommandAndResetClient(client *c) {
     int deadclient = 0;
     server.current_client = c;
@@ -1793,6 +1850,10 @@ int processCommandAndResetClient(client *c) {
  * more query buffer to process, because we read more data from the socket
  * or because a client was blocked and later reactivated, so there could be
  * pending query buffer, already representing a full command, to process. */
+/*
+ * 当前从socket读取新的数据后，或者是原来被blocked的cliet被重新激活了，
+ * 都会调用这个接口来处理已经读取在buff中的数据
+ * */
 void processInputBuffer(client *c) {
     /* Keep processing while there is something in the input buffer */
     while(c->qb_pos < sdslen(c->querybuf)) {
@@ -1804,6 +1865,8 @@ void processInputBuffer(client *c) {
 
         /* Don't process more buffers from clients that have already pending
          * commands to execute in c->argv. */
+		/* 表示buff中已经有一个命令parse完成了，等待执行，buff中数据暂时不用parse了，
+		 * 通常用于多线程读取的情况 */
         if (c->flags & CLIENT_PENDING_COMMAND) break;
 
         /* Don't process input from the master while there is a busy script
@@ -1820,10 +1883,15 @@ void processInputBuffer(client *c) {
         if (c->flags & (CLIENT_CLOSE_AFTER_REPLY|CLIENT_CLOSE_ASAP)) break;
 
         /* Determine request type when unknown. */
+
+		/* 还没有计算，则计算当前的请求类型，以*开头的字符，
+		 * 则认为是PROTO_REQ_MULTIBULK类型，即按RESP格式发送命令的，
+		 * 因为所有的客户端发送数据都是以 array of bulk stings来表示的 */
         if (!c->reqtype) {
             if (c->querybuf[c->qb_pos] == '*') {
                 c->reqtype = PROTO_REQ_MULTIBULK;
             } else {
+				/* 使用类似telnet命令，直接发送请求的时候，就是这种类型 */
                 c->reqtype = PROTO_REQ_INLINE;
             }
         }
@@ -1862,6 +1930,8 @@ void processInputBuffer(client *c) {
                 break;
             }
 
+			/* 这里开始执行，刚才解析处理的命令 */
+
             /* We are finally ready to execute the command. */
             if (processCommandAndResetClient(c) == C_ERR) {
                 /* If the client is no longer valid, we avoid exiting this
@@ -1870,15 +1940,24 @@ void processInputBuffer(client *c) {
                 return;
             }
         }
+
+		/* 一次处理client中查询buff中所有的命令 */
     }
 
     /* Trim to pos */
     if (c->qb_pos) {
+		/* 这个地方有拷贝操作，即每次保持buff中处理过的数据都去掉，实质这个地方有额外开销的嫌疑，
+		 * 当前这个做法太暴力，是可以优化的，比如剩余的空间是多少的时候才移动
+		 */
         sdsrange(c->querybuf,c->qb_pos,-1);
         c->qb_pos = 0;
     }
 }
 
+/* 客户端从网络上发送数据过来的时候，相应的响应函数，
+ * 调用这个接口只是表示网络上有数据可读了，还没有读取出来，
+ * 通过这个接口才真正从网络上读取数据，然后根据协议分析数据处理相应逻辑
+ * */
 void readQueryFromClient(connection *conn) {
     client *c = connGetPrivateData(conn);
     int nread, readlen;

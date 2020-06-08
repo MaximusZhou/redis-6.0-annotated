@@ -80,6 +80,7 @@ void discardTransaction(client *c) {
 
 /* Flag the transacation as DIRTY_EXEC so that EXEC will fail.
  * Should be called every time there is an error while queueing a command. */
+/* flag为CLIENT_MULT，说明是事务执行，其中一个命令执行失败，则设置CLIENT_DIRTY_EXEC标识 */
 void flagTransaction(client *c) {
     if (c->flags & CLIENT_MULTI)
         c->flags |= CLIENT_DIRTY_EXEC;
