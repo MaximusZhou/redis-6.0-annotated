@@ -49,6 +49,7 @@ void openChildInfoPipe(void) {
 }
 
 /* Close the pipes opened with openChildInfoPipe(). */
+/* 关闭父子进程通信的管道 */
 void closeChildInfoPipe(void) {
     if (server.child_info_pipe[0] != -1 ||
         server.child_info_pipe[1] != -1)

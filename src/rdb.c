@@ -302,6 +302,8 @@ void *rdbLoadIntegerObject(rio *rdb, int enctype, int flags, size_t *lenptr) {
 /* String objects in the form "2391" "-100" without any space and with a
  * range of values that can fit in an 8, 16 or 32 bit signed value can be
  * encoded as integers to save space */
+/*
+ */
 int rdbTryIntegerEncoding(char *s, size_t len, unsigned char *enc) {
     long long value;
     char *endptr, buf[32];
@@ -406,6 +408,7 @@ err:
 
 /* Save a string object as [len][data] on disk. If the object is a string
  * representation of an integer value we try to save it in a special form */
+/* 保存一个字符串，格式为[len][data]，如果字符串对应是一个整数，则特殊保存，减少空间 */
 ssize_t rdbSaveRawString(rio *rdb, unsigned char *s, size_t len) {
     int enclen;
     ssize_t n, nwritten = 0;
@@ -422,6 +425,7 @@ ssize_t rdbSaveRawString(rio *rdb, unsigned char *s, size_t len) {
     /* Try LZF compression - under 20 bytes it's unable to compress even
      * aaaaaaaaaaaaaaaaaa so skip it */
     if (server.rdb_compression && len > 20) {
+		/* 压缩方式保存数据 */
         n = rdbSaveLzfStringObject(rdb,s,len);
         if (n == -1) return -1;
         if (n > 0) return n;
@@ -429,6 +433,7 @@ ssize_t rdbSaveRawString(rio *rdb, unsigned char *s, size_t len) {
     }
 
     /* Store verbatim */
+	/* 首先保存长度，然后逐字保存数据内容 */
     if ((n = rdbSaveLen(rdb,len)) == -1) return -1;
     nwritten += n;
     if (len > 0) {
@@ -1055,8 +1060,10 @@ int rdbSaveKeyValuePair(rio *rdb, robj *key, robj *val, long long expiretime) {
 }
 
 /* Save an AUX field. */
+/* 保存辅助的key-value信息，连续保存的 */
 ssize_t rdbSaveAuxField(rio *rdb, void *key, size_t keylen, void *val, size_t vallen) {
     ssize_t ret, len = 0;
+	/* 数据格式为[RDB操作码][key][value]，其中key和value都是字符串，保存格式为[len][data] */
     if ((ret = rdbSaveType(rdb,RDB_OPCODE_AUX)) == -1) return -1;
     len += ret;
     if ((ret = rdbSaveRawString(rdb,key,keylen)) == -1) return -1;
@@ -1080,6 +1087,7 @@ ssize_t rdbSaveAuxFieldStrInt(rio *rdb, char *key, long long val) {
 }
 
 /* Save a few default AUX fields with information about the RDB generated. */
+/* 保存一下辅助的字段到RDB文件中 */
 int rdbSaveInfoAuxFields(rio *rdb, int rdbflags, rdbSaveInfo *rsi) {
     int redis_bits = (sizeof(void*) == 8) ? 64 : 32;
     int aof_preamble = (rdbflags & RDBFLAGS_AOF_PREAMBLE) != 0;
@@ -1150,6 +1158,10 @@ ssize_t rdbSaveSingleModuleAux(rio *rdb, int when, moduleType *mt) {
  * When the function returns C_ERR and if 'error' is not NULL, the
  * integer pointed by 'error' is set to the value of errno just after the I/O
  * error. */
+/*
+ * 创建db的dump并把它发送到指定的IO channel，比如磁盘上或者套接字上，如果成功，则返回C_OK，
+ * 如果发生错误，则返回C_ERR，并且把错误码保存到error中
+ */
 int rdbSaveRio(rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
     dictIterator *di = NULL;
     dictEntry *de;
@@ -1158,13 +1170,18 @@ int rdbSaveRio(rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
     uint64_t cksum;
     size_t processed = 0;
 
+	/* 保存计算checksum用的函数，一边写数据，一边计算checksum */
     if (server.rdb_checksum)
         rdb->update_cksum = rioGenericUpdateChecksum;
     snprintf(magic,sizeof(magic),"REDIS%04d",RDB_VERSION);
+	/* 写入magic，就是魔数 */
     if (rdbWriteRaw(rdb,magic,9) == -1) goto werr;
+	/* 保存一些辅助信息，比如redis版本号、内存使用大小等信息，已经副本相关的信息ris */
     if (rdbSaveInfoAuxFields(rdb,rdbflags,rsi) == -1) goto werr;
+	/* 依次保存每个module的辅助信息 */
     if (rdbSaveModulesAux(rdb, REDISMODULE_AUX_BEFORE_RDB) == -1) goto werr;
 
+	/* 依次保存每个db数据 */
     for (j = 0; j < server.dbnum; j++) {
         redisDb *db = server.db+j;
         dict *d = db->dict;
@@ -1172,10 +1189,12 @@ int rdbSaveRio(rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
         di = dictGetSafeIterator(d);
 
         /* Write the SELECT DB opcode */
+		/* 当前保存是哪个db，格式为[opcode][dbid] */
         if (rdbSaveType(rdb,RDB_OPCODE_SELECTDB) == -1) goto werr;
         if (rdbSaveLen(rdb,j) == -1) goto werr;
 
         /* Write the RESIZE DB opcode. */
+		/*保存db中所有的key和带有效期的key的大小 */
         uint64_t db_size, expires_size;
         db_size = dictSize(db->dict);
         expires_size = dictSize(db->expires);
@@ -1184,6 +1203,7 @@ int rdbSaveRio(rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
         if (rdbSaveLen(rdb,expires_size) == -1) goto werr;
 
         /* Iterate this DB writing every entry */
+		/* 变量db中每个entry保存 */
         while((de = dictNext(di)) != NULL) {
             sds keystr = dictGetKey(de);
             robj key, *o = dictGetVal(de);
@@ -1224,6 +1244,7 @@ int rdbSaveRio(rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
 
     if (rdbSaveModulesAux(rdb, REDISMODULE_AUX_AFTER_RDB) == -1) goto werr;
 
+	/* 最后保存checksum */
     /* EOF opcode */
     if (rdbSaveType(rdb,RDB_OPCODE_EOF) == -1) goto werr;
 
@@ -1270,6 +1291,7 @@ werr: /* Write error. */
 }
 
 /* Save the DB on disk. Return C_ERR on error, C_OK on success. */
+/* 把内存中所有的数据刷到磁盘上 */
 int rdbSave(char *filename, rdbSaveInfo *rsi) {
     char tmpfile[256];
     char cwd[MAXPATHLEN]; /* Current working dir path for error messages. */
@@ -1277,6 +1299,7 @@ int rdbSave(char *filename, rdbSaveInfo *rsi) {
     rio rdb;
     int error = 0;
 
+	/* 先保存到一个临时文件中 */
     snprintf(tmpfile,256,"temp-%d.rdb", (int) getpid());
     fp = fopen(tmpfile,"w");
     if (!fp) {
@@ -1302,7 +1325,9 @@ int rdbSave(char *filename, rdbSaveInfo *rsi) {
     }
 
     /* Make sure data will not remain on the OS's output buffers */
+	/*  fflush把用户空间的buff刷出去，但是数据可能还是在内核buff中 */
     if (fflush(fp) == EOF) goto werr;
+	/* fsync把内核的buff数据刷到物理磁盘上 */
     if (fsync(fileno(fp)) == -1) goto werr;
     if (fclose(fp) == EOF) goto werr;
 
@@ -1345,6 +1370,8 @@ int rdbSaveBackground(char *filename, rdbSaveInfo *rsi) {
 
     server.dirty_before_bgsave = server.dirty;
     server.lastbgsave_try = time(NULL);
+	
+	// 创建父子进程通信的管道
     openChildInfoPipe();
 
     if ((childpid = redisFork()) == 0) {
@@ -1353,10 +1380,13 @@ int rdbSaveBackground(char *filename, rdbSaveInfo *rsi) {
         /* Child */
         redisSetProcTitle("redis-rdb-bgsave");
         redisSetCpuAffinity(server.bgsave_cpulist);
+		/* 开始存盘 */
         retval = rdbSave(filename,rsi);
         if (retval == C_OK) {
+			/* 子进程给管道发送COW信息 */
             sendChildCOWInfo(CHILD_INFO_TYPE_RDB, "RDB");
         }
+		/* 子进程主动退出 */
         exitFromChild((retval == C_OK) ? 0 : 1);
     } else {
         /* Parent */

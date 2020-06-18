@@ -44,6 +44,9 @@ struct _rio {
     /* Backend functions.
      * Since this functions do not tolerate short writes or reads the return
      * value is simplified to: zero on error, non zero on complete success. */
+	/*
+	 * 这些读写函数不允许short 读或写，因此则返回值为0表示发生错误，为1表示成功完成
+	 */
     size_t (*read)(struct _rio *, void *buf, size_t len);
     size_t (*write)(struct _rio *, const void *buf, size_t len);
     off_t (*tell)(struct _rio *);
@@ -53,31 +56,44 @@ struct _rio {
      * designed so that can be called with the current checksum, and the buf
      * and len fields pointing to the new block of data to add to the checksum
      * computation. */
+	/* 用于计算所有读取数据的checksum的函数，比如在RDB文件存盘的时候，
+	 * 这个字段被设置为rioGenericUpdateChecksum，
+	 * 他要求这个计算checksum的函数，可以一边读或写数据，一边计算checksum，
+	 * 而不是等所有的数据读写完成后，才计算checksum */
     void (*update_cksum)(struct _rio *, const void *buf, size_t len);
 
     /* The current checksum and flags (see RIO_FLAG_*) */
     uint64_t cksum, flags;
 
     /* number of bytes read or written */
+	/* 当前读或者写的总字节数 */
     size_t processed_bytes;
 
     /* maximum single read or write chunk size */
+	/* 每次读写调用最多操作的字节数，默认值为0，表示没限制 */
     size_t max_processing_chunk;
 
     /* Backend-specific vars. */
+	/* 写入或者读取各种不同类型的存盘介质，用不同的结构体 */
     union {
         /* In-memory buffer target. */
+		/* 目标是内存buff */
         struct {
             sds ptr;
             off_t pos;
         } buffer;
+		/* 目标是标准IO */
         /* Stdio file pointer target. */
         struct {
             FILE *fp;
+			/* buffered，自从最近一次调用fsync以来，通过fwrite写入的字节数 */
             off_t buffered; /* Bytes written since last fsync. */
+			/* 是否自动调用fsync，比如在RDB文件的时候，通过配置 rdb-save-incremental-fsync决定的，
+			 * 默认值为32M，即buffered的值大于等于这个值，则调用fsync，把应用层和内核中的数据刷到磁盘上 */
             off_t autosync; /* fsync after 'autosync' bytes written. */
         } file;
         /* Connection object (used to read from socket) */
+		/* 目标是套接字 */
         struct {
             connection *conn;   /* Connection */
             off_t pos;    /* pos in buf that was returned */
@@ -86,6 +102,7 @@ struct _rio {
             size_t read_so_far; /* amount of data read from the rio (not buffered) */
         } conn;
         /* FD target (used to write to pipe). */
+		/* 目标是pipe，用于写 */
         struct {
             int fd;       /* File descriptor. */
             off_t pos;

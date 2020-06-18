@@ -1126,6 +1126,11 @@ mstime_t mstime(void) {
  * exit(), because the latter may interact with the same file objects used by
  * the parent process. However if we are testing the coverage normal exit() is
  * used in order to obtain the right coverage information. */
+/*
+ * 在子进程中退出进程，通常使用_exit接口，这样进程退出时候，只是终止进程，不会调用atexit注册函数，
+ * 也不会flush io buff，也不会调用信号处理函数，而调用exit会做这些事情，
+ * 子进程调用_exit后，会向父进程SIGCHLD信号
+ */
 void exitFromChild(int retcode) {
 #ifdef COVERAGE_TEST
     exit(retcode);
@@ -1460,6 +1465,9 @@ int incrementallyRehash(int dbid) {
  * memory pages are copied). The goal of this function is to update the ability
  * for dict.c to resize the hash tables accordingly to the fact we have o not
  * running childs. */
+/*
+ * 当有后台进程在运行的时候，停止dict resize，防止大量的内存拷贝
+ */
 void updateDictResizePolicy(void) {
     if (!hasActiveChildProcess())
         dictEnableResize();
@@ -1771,6 +1779,7 @@ void updateCachedTime(int update_daylight_info) {
     }
 }
 
+/* 在serverCron中定期调用这个接口，检查子进程是否退出了 */
 void checkChildrenDone(void) {
     int statloc;
     pid_t pid;
@@ -4808,6 +4817,10 @@ void setupSignalHandlers(void) {
  * in order to track the SIGUSR1, that we send to a child in order to terminate
  * it in a clean way, without the parent detecting an error and stop
  * accepting writes because of a write error condition. */
+/* 
+ * 给子进程设置SIGUSR1信号处理函数，方便父进程通过发送SIGUSR1信号，终止子进程，
+ * 其他的信号处理方式其中从父进程继承下来了
+ */
 static void sigKillChildHandler(int sig) {
     UNUSED(sig);
     serverLogFromHandler(LL_WARNING, "Received SIGUSR1 in child, exiting now.");
@@ -4826,11 +4839,13 @@ void setupChildSignalHandlers(void) {
     return;
 }
 
+/* 主进程执行fork */
 int redisFork() {
     int childpid;
     long long start = ustime();
     if ((childpid = fork()) == 0) {
         /* Child */
+		/* 在子进程中，关闭所有dup过来的监听套接字 */
         closeListeningSockets(0);
         setupChildSignalHandlers();
     } else {
@@ -4846,6 +4861,7 @@ int redisFork() {
     return childpid;
 }
 
+/* 子进程调用，向管道发生COW信息给父进程 */
 void sendChildCOWInfo(int ptype, char *pname) {
     size_t private_dirty = zmalloc_get_private_dirty(-1);
 

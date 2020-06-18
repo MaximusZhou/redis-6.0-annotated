@@ -57,6 +57,10 @@
 
 /* ------------------------- Buffer I/O implementation ----------------------- */
 
+/*
+ * 当向内存buff读写数据，相关接口的实现
+ */
+
 /* Returns 1 or 0 for success/failure. */
 static size_t rioBufferWrite(rio *r, const void *buf, size_t len) {
     r->io.buffer.ptr = sdscatlen(r->io.buffer.ptr,(char*)buf,len);
@@ -106,16 +110,22 @@ void rioInitWithBuffer(rio *r, sds s) {
 
 /* --------------------- Stdio file pointer implementation ------------------- */
 
+/*
+ * 当向标准IO文件读写数据，相关接口的实现，比如RDB文件存盘，就是使用这种类型
+ */
+
 /* Returns 1 or 0 for success/failure. */
 static size_t rioFileWrite(rio *r, const void *buf, size_t len) {
     size_t retval;
 
+	/* 写入fd对应的文件中，*/
     retval = fwrite(buf,len,1,r->io.file.fp);
     r->io.file.buffered += len;
 
     if (r->io.file.autosync &&
         r->io.file.buffered >= r->io.file.autosync)
     {
+		/* 把数据刷到磁盘，防止通过OS自动刷新机制，出现卡顿的情况 */
         fflush(r->io.file.fp);
         redis_fsync(fileno(r->io.file.fp));
         r->io.file.buffered = 0;
@@ -286,7 +296,7 @@ void rioFreeConn(rio *r, sds *remaining) {
 static size_t rioFdWrite(rio *r, const void *buf, size_t len) {
     ssize_t retval;
     unsigned char *p = (unsigned char*) buf;
-    int doflush = (buf == NULL && len == 0);
+    int doflush = (buf == NULL && len == 0); /* 这个变量用标识，应用层buff要不要在本次写的时候，写到文件中 */
 
     /* For small writes, we rather keep the data in user-space buffer, and flush
      * it only when it grows. however for larger writes, we prefer to flush
@@ -393,6 +403,12 @@ void rioGenericUpdateChecksum(rio *r, const void *buf, size_t len) {
  * buffers sometimes the OS buffers way too much, resulting in too many
  * disk I/O concentrated in very little time. When we fsync in an explicit
  * way instead the I/O pressure is more distributed across time. */
+/*
+ *	每当写入的字节数达到btyes，则自动调用fsync，默认值为0，也就是说，不会调用自动调用fsync，
+ *	依赖于操作机制自动同步数据到磁盘上。
+ *	这个机制在有些情况是有用的，默认情况OS buff特别大，这时候可能在非常短的时间内导致大量的IO，
+ *	使用这个机制，相当于把这IO压力显示地均匀分布到其他时间了
+ */
 void rioSetAutoSync(rio *r, off_t bytes) {
     if(r->write != rioFileIO.write) return;
     r->io.file.autosync = bytes;

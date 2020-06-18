@@ -409,7 +409,7 @@ typedef long long ustime_t; /* microsecond time type. */
 
 /* RDB active child save type. */
 #define RDB_CHILD_TYPE_NONE 0
-#define RDB_CHILD_TYPE_DISK 1     /* RDB is written to disk. */
+#define RDB_CHILD_TYPE_DISK 1     /* RDB is written to disk. 即子进程在写RDB文件 */
 #define RDB_CHILD_TYPE_SOCKET 2   /* RDB is written to slave socket. */
 
 /* Keyspace changes notification classes. Every class is associated with a
@@ -641,7 +641,11 @@ typedef struct clientReplyBlock {
 /* Redis database representation. There are multiple databases identified
  * by integers from 0 (the default database) up to the max configured
  * database. The database number is the 'id' field in the structure. */
+/* 
+ * 用来表示一个redis db
+ * */
 typedef struct redisDb {
+	/* dict保存所有的key数据，包括带有效期的key */
     dict *dict;                 /* The keyspace for this DB */
     dict *expires;              /* Timeout of keys with a timeout set */
     dict *blocking_keys;        /* Keys with clients waiting for data (BLPOP)*/
@@ -1133,7 +1137,9 @@ struct redisServer {
     long long stat_active_defrag_key_misses;/* number of keys scanned and not moved */
     long long stat_active_defrag_scanned;   /* number of dictEntries scanned */
     size_t stat_peak_memory;        /* Max used memory record */
+	/* 统计最近一次fork花的时间 */
     long long stat_fork_time;       /* Time needed to perform latest fork() */
+	/* 保存fork每秒拷贝的数据大小 */
     double stat_fork_rate;          /* Fork rate in GB/sec. */
     long long stat_rejected_conn;   /* Clients rejected because of maxclients */
     long long stat_sync_full;       /* Number of full resyncs with slaves. */
