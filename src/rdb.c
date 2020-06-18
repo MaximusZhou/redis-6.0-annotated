@@ -1337,6 +1337,7 @@ werr:
     return C_ERR;
 }
 
+/* 外部模块通过调用这个接口，在后台启动一个子进程，开始存盘，即把redis内存中所有的数据保存到磁盘上 */
 int rdbSaveBackground(char *filename, rdbSaveInfo *rsi) {
     pid_t childpid;
 
@@ -2348,6 +2349,9 @@ eoferr:
  *
  * If you pass an 'rsi' structure initialied with RDB_SAVE_OPTION_INIT, the
  * loading code will fiil the information fields in the structure. */
+/*
+ * 在服务器启动时候调用，用来初始化redis内存数据，即把保存的db数据都加载到内存中
+ */
 int rdbLoad(char *filename, rdbSaveInfo *rsi, int rdbflags) {
     FILE *fp;
     rio rdb;
@@ -2556,6 +2560,10 @@ void saveCommand(client *c) {
 }
 
 /* BGSAVE [SCHEDULE] */
+/* BGSAVE命令响应逻辑函数，参数schedule用来标识，当有AOF子进程正在执行的时候，能执行这个命令，
+ * 若为0，并且AOF子进程在执行，则命令执行失败，若为1，则设置server.rdb_bgsave_scheduled标识，
+ * 等AOF子进程完成后，才触发RDB文件存盘。
+ * */
 void bgsaveCommand(client *c) {
     int schedule = 0;
 
@@ -2601,6 +2609,9 @@ void bgsaveCommand(client *c) {
  * pointer if the instance has a valid master client, otherwise NULL
  * is returned, and the RDB saving will not persist any replication related
  * information. */
+/* 
+ * 把要保存到RDB文件的副本信息保存到结构体参数rsi中，并且返回
+ */
 rdbSaveInfo *rdbPopulateSaveInfo(rdbSaveInfo *rsi) {
     rdbSaveInfo rsi_init = RDB_SAVE_INFO_INIT;
     *rsi = rsi_init;

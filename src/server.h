@@ -975,6 +975,11 @@ struct redisMemOverhead {
  * replication in order to make sure that chained slaves (slaves of slaves)
  * select the correct DB and are able to accept the stream coming from the
  * top-level master. */
+/*
+ * 当加载db数据的时候，这个结构体可以用来保存除了db数据以外，其他额外一些信息
+ * 比如当前用在副本实例中，作为副本的时候，从db中读取的时候，
+ * 把与这个副本相关的信息加载到这个结构体中
+ */
 typedef struct rdbSaveInfo {
     /* Used saving and loading. */
     int repl_stream_db;  /* DB to select in server.master client. */
@@ -1215,6 +1220,7 @@ struct redisServer {
                                       to child process. */
     sds aof_child_diff;             /* AOF diff accumulator child side. */
     /* RDB persistence */
+	/* 当修改数据的时候，diryt变量就++，比如任何的set命令操作 */
     long long dirty;                /* Changes to DB from the last save */
     long long dirty_before_bgsave;  /* Used to restore dirty on failed BGSAVE */
     pid_t rdb_child_pid;            /* PID of RDB saving child */
