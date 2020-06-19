@@ -44,6 +44,9 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+/*
+ * 对不同类型的设备进行IO操作时候，做相应操作的封装，应用层使用相同代码即可进行不同设备的IO操作
+ */
 
 #include "fmacros.h"
 #include <string.h>
@@ -162,6 +165,7 @@ static const rio rioFileIO = {
     { { NULL, 0 } } /* union for io-specific vars */
 };
 
+/* 读写磁盘数据，首先调用这个接口来初始化rio变量 */
 void rioInitWithFile(rio *r, FILE *fp) {
     *r = rioFileIO;
     r->io.file.fp = fp;
@@ -174,6 +178,11 @@ void rioInitWithFile(rio *r, FILE *fp) {
  * the connection to the memory via rdbLoadRio(), thus this implementation
  * only implements reading from a connection that is, normally,
  * just a socket. */
+
+/*
+ * 从网络上读取RDB文件数据，到内存中，当前使用在副本中，阻塞从网络读数据，
+ * 然后在内存中重建db
+ */
 
 static size_t rioConnWrite(rio *r, const void *buf, size_t len) {
     UNUSED(r);

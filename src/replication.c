@@ -1738,6 +1738,7 @@ void readSyncBulkPayload(connection *conn) {
 
         /* Put the socket in blocking mode to simplify RDB transfer.
          * We'll restore it when the RDB is received. */
+		/* 阻塞从网络读数据，把其放到内存中 */
         connBlock(conn);
         connRecvTimeout(conn, server.repl_timeout*1000);
         startLoading(server.repl_transfer_size, RDBFLAGS_REPLICATION);

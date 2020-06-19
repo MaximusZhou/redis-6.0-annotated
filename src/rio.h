@@ -75,12 +75,15 @@ struct _rio {
 
     /* Backend-specific vars. */
 	/* 写入或者读取各种不同类型的存盘介质，用不同的结构体 */
+	/* 下面使用的off_t类型不是C标准，是POSIX标准定义的，是一个有符号的整数，
+	 * 用来表示文件大小，并且其大小在不同的机器上不同的，参考：
+	 * https://stackoverflow.com/questions/9073667/where-to-find-the-complete-definition-of-off-t-type*/
     union {
         /* In-memory buffer target. */
 		/* 目标是内存buff */
         struct {
             sds ptr;
-            off_t pos;
+            off_t pos; 
         } buffer;
 		/* 目标是标准IO */
         /* Stdio file pointer target. */
@@ -116,7 +119,10 @@ typedef struct _rio rio;
 /* The following functions are our interface with the stream. They'll call the
  * actual implementation of read / write / tell, and will update the checksum
  * if needed. */
-
+/*
+ * rioWrite 和 rioRead 就是供外部调用的接口，用来向相应的设备上读写数据，
+ * 实质就是调用函数指针的封装，同时会计算读写数据的checksum
+ */
 static inline size_t rioWrite(rio *r, const void *buf, size_t len) {
     if (r->flags & RIO_FLAG_WRITE_ERROR) return 0;
     while (len) {
@@ -173,6 +179,7 @@ static inline void rioClearErrors(rio *r) {
     r->flags &= ~(RIO_FLAG_READ_ERROR|RIO_FLAG_WRITE_ERROR);
 }
 
+/* 供外部模块调用，用来初始化变量rio，即准备读写设备的函数，已经数据成员初始化 */
 void rioInitWithFile(rio *r, FILE *fp);
 void rioInitWithBuffer(rio *r, sds s);
 void rioInitWithConn(rio *r, connection *conn, size_t read_limit);
@@ -181,6 +188,7 @@ void rioInitWithFd(rio *r, int fd);
 void rioFreeFd(rio *r);
 void rioFreeConn(rio *r, sds* out_remainingBufferedData);
 
+/* 封装rioWrite接口，方便应用层写不同类型的数据 */
 size_t rioWriteBulkCount(rio *r, char prefix, long count);
 size_t rioWriteBulkString(rio *r, const char *buf, size_t len);
 size_t rioWriteBulkLongLong(rio *r, long long l);
@@ -189,7 +197,9 @@ size_t rioWriteBulkDouble(rio *r, double d);
 struct redisObject;
 int rioWriteBulkObject(rio *r, struct redisObject *obj);
 
+/* 通用的计算checksum的函数，支持一边读写，一边计算checksum */
 void rioGenericUpdateChecksum(rio *r, const void *buf, size_t len);
+/* 设置写数据的时候，自动调用fsync，防止OS缓存太大，一次刷到磁盘上，出现卡顿的情况 */
 void rioSetAutoSync(rio *r, off_t bytes);
 
 #endif
