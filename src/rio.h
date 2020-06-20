@@ -99,6 +99,7 @@ struct _rio {
 		/* 目标是套接字 */
         struct {
             connection *conn;   /* Connection */
+			/* 指向buf的位置，即当前读取的数据存放开始的位置 */
             off_t pos;    /* pos in buf that was returned */
             sds buf;      /* buffered data */
             size_t read_limit;  /* don't allow to buffer/read more than that */

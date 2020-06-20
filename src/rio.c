@@ -196,11 +196,13 @@ static size_t rioConnRead(rio *r, void *buf, size_t len) {
     size_t avail = sdslen(r->io.conn.buf)-r->io.conn.pos;
 
     /* If the buffer is too small for the entire request: realloc. */
+	/* buf所有加起来的空间都不够 */
     if (sdslen(r->io.conn.buf) + sdsavail(r->io.conn.buf) < len)
         r->io.conn.buf = sdsMakeRoomFor(r->io.conn.buf, len - sdslen(r->io.conn.buf));
 
     /* If the remaining unused buffer is not large enough: memmove so that we
      * can read the rest. */
+	/* 移动buf中的数据到开始的位置 */
     if (len > avail && sdsavail(r->io.conn.buf) < len - avail) {
         sdsrange(r->io.conn.buf, r->io.conn.pos, -1);
         r->io.conn.pos = 0;
