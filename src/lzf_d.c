@@ -34,6 +34,10 @@
  * either the BSD or the GPL.
  */
 
+/*
+ * lzf解压缩接口相关实现
+ */
+
 #include "lzfP.h"
 
 #if AVOID_ERRNO

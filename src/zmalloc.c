@@ -407,6 +407,7 @@ int jemalloc_purge() {
  * Example: zmalloc_get_smap_bytes_by_field("Rss:",-1);
  */
 #if defined(HAVE_PROC_SMAPS)
+/* 获取/proc/pid/smaps中的信息，linux在是有定义 HAVE_PROC_SMAPS宏的 */
 size_t zmalloc_get_smap_bytes_by_field(char *field, long pid) {
     char line[1024];
     size_t bytes = 0;

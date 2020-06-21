@@ -47,6 +47,7 @@
 /* This macro is called when RDB read failed (possibly a short read) */
 #define rdbReportReadError(...) rdbReportError(0, __LINE__,__VA_ARGS__)
 
+/* 保存当前正在加载的db文件名 */
 char* rdbFileBeingLoaded = NULL; /* used for rdb checking on read error */
 extern int rdbCheckMode;
 void rdbCheckError(const char *fmt, ...);
@@ -761,6 +762,7 @@ size_t rdbSaveStreamConsumers(rio *rdb, streamCG *cg) {
 
 /* Save a Redis object.
  * Returns -1 on error, number of bytes written on success. */
+/* 保存参数o到，即redis obejct */
 ssize_t rdbSaveObject(rio *rdb, robj *o, robj *key) {
     ssize_t n = 0, nwritten = 0;
 
@@ -1017,17 +1019,24 @@ size_t rdbSavedObjectLen(robj *o, robj *key) {
  * On error -1 is returned.
  * On success if the key was actually saved 1 is returned, otherwise 0
  * is returned (the key was already expired). */
+/*
+ * 保存一对key-value，并且可以带有效期，如果保存的时候，key已经过期了，则返回0
+ * 否则返回1
+ */
 int rdbSaveKeyValuePair(rio *rdb, robj *key, robj *val, long long expiretime) {
+	/* 默认配置maxmemory_policy值是MAXMEMORY_NO_EVICTION，即不会淘汰相应的key */
     int savelru = server.maxmemory_policy & MAXMEMORY_FLAG_LRU;
     int savelfu = server.maxmemory_policy & MAXMEMORY_FLAG_LFU;
 
     /* Save the expire time */
+	/* 保存过期时间 */
     if (expiretime != -1) {
         if (rdbSaveType(rdb,RDB_OPCODE_EXPIRETIME_MS) == -1) return -1;
         if (rdbSaveMillisecondTime(rdb,expiretime) == -1) return -1;
     }
 
     /* Save the LRU info. */
+	/* 记录使用LRU内存策略时候，相关的信息*/
     if (savelru) {
         uint64_t idletime = estimateObjectIdleTime(val);
         idletime /= 1000; /* Using seconds is enough and requires less space.*/
@@ -1036,6 +1045,7 @@ int rdbSaveKeyValuePair(rio *rdb, robj *key, robj *val, long long expiretime) {
     }
 
     /* Save the LFU info. */
+	/* 记录使用LFU内存策略时候，相关的信息*/
     if (savelfu) {
         uint8_t buf[1];
         buf[0] = LFUDecrAndReturn(val);
@@ -1048,8 +1058,11 @@ int rdbSaveKeyValuePair(rio *rdb, robj *key, robj *val, long long expiretime) {
     }
 
     /* Save type, key, value */
+	/* 保存value的类型 */
     if (rdbSaveObjectType(rdb,val) == -1) return -1;
+	/* 保存key */
     if (rdbSaveStringObject(rdb,key) == -1) return -1;
+	/* 保存value */
     if (rdbSaveObject(rdb,val,key) == -1) return -1;
 
     /* Delay return if required (for testing) */
@@ -1211,11 +1224,17 @@ int rdbSaveRio(rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
 
             initStaticStringObject(key,keystr);
             expire = getExpire(db,&key);
+
+			/* 保存每一对key-value数据 */
             if (rdbSaveKeyValuePair(rdb,&key,o,expire) == -1) goto werr;
 
             /* When this RDB is produced as part of an AOF rewrite, move
              * accumulated diff from parent to child while rewriting in
              * order to have a smaller final write. */
+			/*
+			 * 如果RDB文件是通过AOF rewrite来创建的，则从管道里面读取父进程在子进程存盘期间，
+			 * 一些额外的修改操作，读取到server.aof_child_diff中
+			 */
             if (rdbflags & RDBFLAGS_AOF_PREAMBLE &&
                 rdb->processed_bytes > processed+AOF_READ_DIFF_INTERVAL_BYTES)
             {
@@ -1231,6 +1250,7 @@ int rdbSaveRio(rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
      * the script cache as well: on successful PSYNC after a restart, we need
      * to be able to process any EVALSHA inside the replication backlog the
      * master will send us. */
+	/* 保存副本的脚本信息 */
     if (rsi && dictSize(server.lua_scripts)) {
         di = dictGetIterator(server.lua_scripts);
         while((de = dictNext(di)) != NULL) {
@@ -1242,6 +1262,7 @@ int rdbSaveRio(rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
         di = NULL; /* So that we don't release it again on error. */
     }
 
+	/* 保存module中的信息 */
     if (rdbSaveModulesAux(rdb, REDISMODULE_AUX_AFTER_RDB) == -1) goto werr;
 
 	/* 最后保存checksum */
@@ -1250,6 +1271,7 @@ int rdbSaveRio(rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
 
     /* CRC64 checksum. It will be zero if checksum computation is disabled, the
      * loading code skips the check in this case. */
+	/* 最后保存checksum */
     cksum = rdb->cksum;
     memrev64ifbe(&cksum);
     if (rioWrite(rdb,&cksum,8) == 0) goto werr;
@@ -1987,6 +2009,9 @@ robj *rdbLoadObject(int rdbtype, rio *rdb, sds key) {
 
 /* Mark that we are loading in the global state and setup the fields
  * needed to provide loading stats. */
+/*
+ * 设置加载的全局状态
+ */
 void startLoading(size_t size, int rdbflags) {
     /* Load the DB */
     server.loading = 1;
@@ -2008,6 +2033,9 @@ void startLoading(size_t size, int rdbflags) {
 /* Mark that we are loading in the global state and setup the fields
  * needed to provide loading stats.
  * 'filename' is optional and used for rdb-check on error */
+/* 
+ * 加载RDB文件的时候，打开文件后，马上调用这个接口，设置一些服务器变量和状态
+ */
 void startLoadingFile(FILE *fp, char* filename, int rdbflags) {
     struct stat sb;
     if (fstat(fileno(fp), &sb) == -1)
@@ -2024,6 +2052,7 @@ void loadingProgress(off_t pos) {
 }
 
 /* Loading finished */
+/* db文件加载到内存后，调用这个接口，清除相关的加载状态 */
 void stopLoading(int success) {
     server.loading = 0;
     rdbFileBeingLoaded = NULL;
@@ -2059,6 +2088,10 @@ void stopSaving(int success) {
 
 /* Track loading progress in order to serve client's from time to time
    and if needed calculate rdb checksum  */
+/*
+ * 在每读取一部分数据后，调用这个函数，用来计算checksum 和 更新读取状态，
+ * 这个函数就是rio的checksum的回调函数
+ */
 void rdbLoadProgressCallback(rio *r, const void *buf, size_t len) {
     if (server.rdb_checksum)
         rioGenericUpdateChecksum(r, buf, len);
@@ -2079,14 +2112,19 @@ void rdbLoadProgressCallback(rio *r, const void *buf, size_t len) {
 
 /* Load an RDB file from the rio stream 'rdb'. On success C_OK is returned,
  * otherwise C_ERR is returned and 'errno' is set accordingly. */
+/* 从抽象的IO流rio中加载RDB文件 */
 int rdbLoadRio(rio *rdb, int rdbflags, rdbSaveInfo *rsi) {
     uint64_t dbid;
     int type, rdbver;
     redisDb *db = server.db+0;
     char buf[1024];
 
+	/* 设置checksum函数 */
     rdb->update_cksum = rdbLoadProgressCallback;
+	/* 设置每次读操作读取的数据大小，当前默认值2M */
     rdb->max_processing_chunk = server.loading_process_events_interval_bytes;
+
+	/* 按rdb文件写入的数据格式，依次读取文件中的数据 */
     if (rioRead(rdb,buf,9) == 0) goto eoferr;
     buf[9] = '\0';
     if (memcmp(buf,"REDIS",5) != 0) {
@@ -2105,6 +2143,7 @@ int rdbLoadRio(rio *rdb, int rdbflags, rdbSaveInfo *rsi) {
     long long lru_idle = -1, lfu_freq = -1, expiretime = -1, now = mstime();
     long long lru_clock = LRU_CLOCK();
 
+	/* 首先读取OPCODE，根据OPCODE类型，读取相应的数据 */
     while(1) {
         sds key;
         robj *val;
@@ -2341,7 +2380,9 @@ int rdbLoadRio(rio *rdb, int rdbflags, rdbSaveInfo *rsi) {
         lfu_freq = -1;
         lru_idle = -1;
     }
+
     /* Verify the checksum if RDB version is >= 5 */
+	/* 比较checksum，即检测数据一致性 */
     if (rdbver >= 5) {
         uint64_t cksum, expected = rdb->cksum;
 
@@ -2365,6 +2406,7 @@ int rdbLoadRio(rio *rdb, int rdbflags, rdbSaveInfo *rsi) {
      * this will in turn either abort Redis in most cases, or if we are loading
      * the RDB file from a socket during initial SYNC (diskless replica mode),
      * we'll report the error to the caller, so that we can retry. */
+	/* 非法的数据格式，报错 */
 eoferr:
     serverLog(LL_WARNING,
         "Short read or OOM loading DB. Unrecoverable error, aborting now.");
@@ -2380,7 +2422,9 @@ eoferr:
  * If you pass an 'rsi' structure initialied with RDB_SAVE_OPTION_INIT, the
  * loading code will fiil the information fields in the structure. */
 /*
- * 在服务器启动时候调用，用来初始化redis内存数据，即把保存的db数据都加载到内存中
+ * 在服务器启动时候调用，用来初始化redis内存数据，即读取保存db数据文件内容到内存中，
+ * 然后在内存中重建db，实质就是一个dict，
+ * 参数rsi保存的就是存盘时候，额外要保存的信息，当前就是副本相关的信息
  */
 int rdbLoad(char *filename, rdbSaveInfo *rsi, int rdbflags) {
     FILE *fp;
@@ -2469,6 +2513,7 @@ void backgroundSaveDoneHandler(int exitcode, int bysignal) {
 /* Kill the RDB saving child using SIGUSR1 (so that the parent will know
  * the child did not exit for an error, but because we wanted), and performs
  * the cleanup needed. */
+/* kill调用正在存盘的RDB进程，通过发送SIGUSR1信号 */
 void killRDBChild(void) {
     kill(server.rdb_child_pid,SIGUSR1);
     rdbRemoveTempFile(server.rdb_child_pid);

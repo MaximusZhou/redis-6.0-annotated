@@ -34,16 +34,19 @@
  * RDB / AOF saving process from the child to the parent (for instance
  * the amount of copy on write memory used) */
 /*
- * 父进程创建一个pipe，用于父子进程通信
+ * 父进程创建一个pipe，用于父子进程通信，
+ * 当前用在子进程给父进程发送信息，发送子进程在存盘期间，拷贝出多少diry内存，即COW内存大小
  */
 void openChildInfoPipe(void) {
     if (pipe(server.child_info_pipe) == -1) {
         /* On error our two file descriptors should be still set to -1,
          * but we call anyway cloesChildInfoPipe() since can't hurt. */
         closeChildInfoPipe();
+		/* 设置非阻塞读 */
     } else if (anetNonBlock(NULL,server.child_info_pipe[0]) != ANET_OK) {
         closeChildInfoPipe();
     } else {
+		/* 初始化用于接收数据的内存 */
         memset(&server.child_info_data,0,sizeof(server.child_info_data));
     }
 }
@@ -63,6 +66,9 @@ void closeChildInfoPipe(void) {
 
 /* Send COW data to parent. The child should call this function after populating
  * the corresponding fields it want to sent (according to the process type). */
+/* 
+ * 子进程调用这个接口，把COW数据发送给父进程，参数ptype用来表示那类型的子进程
+ */
 void sendChildInfo(int ptype) {
     if (server.child_info_pipe[1] == -1) return;
     server.child_info_data.magic = CHILD_INFO_MAGIC;
@@ -74,6 +80,9 @@ void sendChildInfo(int ptype) {
 }
 
 /* Receive COW data from parent. */
+/*
+ * 父进程调用，获取子进程发送过来的数据，当检测到子进程退出的时候调用
+ */
 void receiveChildInfo(void) {
     if (server.child_info_pipe[0] == -1) return;
     ssize_t wlen = sizeof(server.child_info_data);

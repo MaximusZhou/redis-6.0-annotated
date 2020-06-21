@@ -72,6 +72,7 @@
 /* Map object types to RDB object types. Macros starting with OBJ_ are for
  * memory storage and may change. Instead RDB types must be fixed because
  * we store them on disk. */
+/* 存储在磁盘对应value的类型值 */
 #define RDB_TYPE_STRING 0
 #define RDB_TYPE_LIST   1
 #define RDB_TYPE_SET    2
@@ -97,6 +98,7 @@
 #define rdbIsObjectType(t) ((t >= 0 && t <= 7) || (t >= 9 && t <= 15))
 
 /* Special RDB opcodes (saved/loaded with rdbSaveType/rdbLoadType). */
+/* 在保存或者读取RDB文件，保存或者读取的各种opcode，用来标识接下来保存或者读取数据的用途 */
 #define RDB_OPCODE_MODULE_AUX 247   /* Module auxiliary data. */
 #define RDB_OPCODE_IDLE       248   /* LRU idle time. */
 #define RDB_OPCODE_FREQ       249   /* LFU frequency. */

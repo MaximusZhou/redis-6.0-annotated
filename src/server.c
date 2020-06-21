@@ -1789,13 +1789,20 @@ void checkChildrenDone(void) {
      * as long as we didn't finish to drain the pipe, since then we're at risk
      * of starting a new fork and a new pipe before we're done with the previous
      * one. */
+	/*
+	 * 只可能同时只有一个子进程存在，这个地方的rdb_pipe_conns是用在副本中
+	 */
     if (server.rdb_child_pid != -1 && server.rdb_pipe_conns)
         return;
 
+	/* 参数WNOHANG表示，如果没有子进程退出，则马上返回，
+	 * 接口wait3是非标准的，通常应该使用waitpid接口 */
     if ((pid = wait3(&statloc,WNOHANG,NULL)) != 0) {
-        int exitcode = WEXITSTATUS(statloc);
+        int exitcode = WEXITSTATUS(statloc); /* 通过相关的宏，获取相应的exit code */
         int bysignal = 0;
 
+		/* 检测进程是否是通过信号SIGUSR1终止的，宏WIFSIGNALED就是用来检测子进程被信号终止的，
+		 * 宏WTERMSIG就是获取信号的编号 */
         if (WIFSIGNALED(statloc)) bysignal = WTERMSIG(statloc);
 
         /* sigKillChildHandler catches the signal and calls exit(), but we
@@ -3740,6 +3747,7 @@ int prepareForShutdown(int flags) {
        overwrite the synchronous saving did by SHUTDOWN. */
     if (server.rdb_child_pid != -1) {
         serverLog(LL_WARNING,"There is a child saving an .rdb. Killing it!");
+		/* kill掉正在存盘的RDB子进程 */
         killRDBChild();
     }
 
@@ -4861,8 +4869,9 @@ int redisFork() {
     return childpid;
 }
 
-/* 子进程调用，向管道发生COW信息给父进程 */
+/* 子进程调用，向管道发送COW信息给父进程，在子进程存盘成功后，退出前调用这个接口 */
 void sendChildCOWInfo(int ptype, char *pname) {
+	/* 实质是通过/proc/self/smaps中的信息，获取Private_Dirty字段的信息 */
     size_t private_dirty = zmalloc_get_private_dirty(-1);
 
     if (private_dirty) {

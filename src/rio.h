@@ -122,7 +122,9 @@ typedef struct _rio rio;
  * if needed. */
 /*
  * rioWrite 和 rioRead 就是供外部调用的接口，用来向相应的设备上读写数据，
- * 实质就是调用函数指针的封装，同时会计算读写数据的checksum
+ * 实质就是调用函数指针的封装，同时会计算读写数据的checksum，
+ * 应用层读取指定的长度的数据，这个两个接口会做一个while循环，
+ * 可能需要多次调用底层的read或者write接口才能完成，读写指定长度的数据
  */
 static inline size_t rioWrite(rio *r, const void *buf, size_t len) {
     if (r->flags & RIO_FLAG_WRITE_ERROR) return 0;

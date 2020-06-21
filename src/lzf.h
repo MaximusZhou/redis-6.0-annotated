@@ -37,6 +37,10 @@
 #ifndef LZF_H
 #define LZF_H
 
+/*
+ * 外部模块include这个文件，使用压缩和解压缩接口
+ */
+
 /***********************************************************************
 **
 **	lzf -- an extremely fast/free compression/decompression-method

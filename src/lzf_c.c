@@ -34,6 +34,10 @@
  * either the BSD or the GPL.
  */
 
+/*
+ * lzf压缩接口相关实现
+ */
+
 #include "lzfP.h"
 
 #define HSIZE (1 << (HLOG))

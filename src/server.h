@@ -1261,6 +1261,7 @@ struct redisServer {
     struct {
         int process_type;           /* AOF or RDB child? */
         size_t cow_size;            /* Copy on write size. */
+		/* 确保收到的数据是有效的 */
         unsigned long long magic;   /* Magic value to make sure data is valid. */
     } child_info_data;
     /* Propagation of commands in AOF / replication */
