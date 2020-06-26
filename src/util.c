@@ -289,6 +289,7 @@ uint32_t sdigits10(int64_t v) {
  *
  * Modified in order to handle signed integers since the original code was
  * designed for unsigned integers. */
+/* 把long long转换为字符串来保存 */
 int ll2string(char *dst, size_t dstlen, long long svalue) {
     static const char digits[201] =
         "0001020304050607080910111213141516171819"
@@ -318,6 +319,7 @@ int ll2string(char *dst, size_t dstlen, long long svalue) {
     if (length >= dstlen) return 0;
 
     /* Null term. */
+	/* 通过hash表，就是digits表，两位来转换为字符串，加快速度 */
     uint32_t next = length;
     dst[next] = '\0';
     next--;
