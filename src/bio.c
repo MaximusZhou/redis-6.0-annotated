@@ -57,25 +57,39 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+/*
+ * 这个模块用来实现在后台执行一些IO相关的操作，防止阻塞主线程，
+ * 在实现的时候，区分不同的job类型，同一个job类型在同一个队列里，
+ * 并且保证先加入队列的job，先处理。
+ * 每个线程处理器相应的工作类型的job，
+ * 简单说，一个线程处理一种类型的job，一种类型的job被一个工作线程处理，
+ * 每种类型的job对应一个工作队列，即每个job类型的工作队列与工作线程是一一对应的关系
+ */
+
 
 #include "server.h"
 #include "bio.h"
 
 static pthread_t bio_threads[BIO_NUM_OPS];
+
+/* 控制修改bio_jobs和bio_pending的互斥变量和条件变量 */
 static pthread_mutex_t bio_mutex[BIO_NUM_OPS];
 static pthread_cond_t bio_newjob_cond[BIO_NUM_OPS];
+
 static pthread_cond_t bio_step_cond[BIO_NUM_OPS];
-static list *bio_jobs[BIO_NUM_OPS];
+static list *bio_jobs[BIO_NUM_OPS]; /* 每个job类型队列就是一个list */
 /* The following array is used to hold the number of pending jobs for every
  * OP type. This allows us to export the bioPendingJobsOfType() API that is
  * useful when the main thread wants to perform some operation that may involve
  * objects shared with the background thread. The main thread will just wait
  * that there are no longer jobs of this type to be executed before performing
  * the sensible operation. This data is also useful for reporting. */
+/* 这个数组用来保存相应类型的job，还有多少job等待处理 */
 static unsigned long long bio_pending[BIO_NUM_OPS];
 
 /* This structure represents a background Job. It is only used locally to this
  * file as the API does not expose the internals at all. */
+/* 用来表示每个job */
 struct bio_job {
     time_t time; /* Time at which the job was created. */
     /* Job specific arguments pointers. If we need to pass more than three
@@ -90,9 +104,11 @@ void lazyfreeFreeSlotsMapFromBioThread(zskiplist *sl);
 
 /* Make sure we have enough stack to perform all the things we do in the
  * main thread. */
+/* 每个线程栈大小至少4M */
 #define REDIS_THREAD_STACK_SIZE (1024*1024*4)
 
 /* Initialize the background system, spawning the thread. */
+/* 初始化后台线程，在服务器初始化的时候调用 */
 void bioInit(void) {
     pthread_attr_t attr;
     pthread_t thread;
@@ -118,6 +134,7 @@ void bioInit(void) {
     /* Ready to spawn our threads. We use the single argument the thread
      * function accepts in order to pass the job ID the thread is
      * responsible of. */
+	/* 创建线程 */
     for (j = 0; j < BIO_NUM_OPS; j++) {
         void *arg = (void*)(unsigned long) j;
         if (pthread_create(&thread,&attr,bioProcessBackgroundJobs,arg) != 0) {
@@ -128,6 +145,7 @@ void bioInit(void) {
     }
 }
 
+/* 创建指定类型的job，放到相应的队列中 */
 void bioCreateBackgroundJob(int type, void *arg1, void *arg2, void *arg3) {
     struct bio_job *job = zmalloc(sizeof(*job));
 
@@ -142,6 +160,7 @@ void bioCreateBackgroundJob(int type, void *arg1, void *arg2, void *arg3) {
     pthread_mutex_unlock(&bio_mutex[type]);
 }
 
+/* 线程调用的函数 */
 void *bioProcessBackgroundJobs(void *arg) {
     struct bio_job *job;
     unsigned long type = (unsigned long) arg;
@@ -154,6 +173,7 @@ void *bioProcessBackgroundJobs(void *arg) {
         return NULL;
     }
 
+	/*　设置线程名字和亲密度 */
     switch (type) {
     case BIO_CLOSE_FILE:
         redis_set_thread_title("bio_close_file");
@@ -170,6 +190,7 @@ void *bioProcessBackgroundJobs(void *arg) {
 
     /* Make the thread killable at any time, so that bioKillThreads()
      * can work reliably. */
+	/* 设置线程可以被kill  */
     pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
     pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
 
@@ -187,6 +208,7 @@ void *bioProcessBackgroundJobs(void *arg) {
 
         /* The loop always starts with the lock hold. */
         if (listLength(bio_jobs[type]) == 0) {
+			/* 等待job */
             pthread_cond_wait(&bio_newjob_cond[type],&bio_mutex[type]);
             continue;
         }
@@ -198,6 +220,7 @@ void *bioProcessBackgroundJobs(void *arg) {
         pthread_mutex_unlock(&bio_mutex[type]);
 
         /* Process the job accordingly to its type. */
+		/* 根据job类型执行相关工作 */
         if (type == BIO_CLOSE_FILE) {
             close((long)job->arg1);
         } else if (type == BIO_AOF_FSYNC) {
@@ -220,6 +243,7 @@ void *bioProcessBackgroundJobs(void *arg) {
 
         /* Lock again before reiterating the loop, if there are no longer
          * jobs to process we'll block again in pthread_cond_wait(). */
+		/* 处理完成了，则删除job和减少相关的等待job的数据 */
         pthread_mutex_lock(&bio_mutex[type]);
         listDelNode(bio_jobs[type],ln);
         bio_pending[type]--;
@@ -230,6 +254,7 @@ void *bioProcessBackgroundJobs(void *arg) {
 }
 
 /* Return the number of pending jobs of the specified type. */
+/* 返回指定类型job要处理的job数量 */
 unsigned long long bioPendingJobsOfType(int type) {
     unsigned long long val;
     pthread_mutex_lock(&bio_mutex[type]);

@@ -1999,7 +1999,7 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     } else {
         /* If there is not a background saving/rewrite in progress check if
          * we have to save/rewrite now. */
-		/* 如果后台没有在进行存盘或者rewrite操作，检查当前是否要触发执行 */
+		/* 如果后台没有在进行存盘或者rewrite操作，检查当前是否要触发执行RDB子进程存盘 */
         for (j = 0; j < server.saveparamslen; j++) {
             struct saveparam *sp = server.saveparams+j;
 
@@ -2030,6 +2030,10 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
             server.aof_rewrite_perc &&
             server.aof_current_size > server.aof_rewrite_min_size)
         {
+			/* 当前没有其他子进程，并且当前AOF文件的大小，
+			 * 在最近一次aof rewrite的aof文件基础上，增加的百分比大于等于了
+			 * server.aof_rewrite_perc了，并且aof文件大于了server.aof_rewrite_min_size，
+			 * 则触发aof rewrite子进程 */
             long long base = server.aof_rewrite_base_size ?
                 server.aof_rewrite_base_size : 1;
             long long growth = (server.aof_current_size*100/base) - 100;
@@ -2944,6 +2948,7 @@ void initServer(void) {
 
     /* Open the AOF file if needed. */
     if (server.aof_state == AOF_ON) {
+		/* 打开保存aof文件 */
         server.aof_fd = open(server.aof_filename,
                                O_WRONLY|O_APPEND|O_CREAT,0644);
         if (server.aof_fd == -1) {
@@ -3190,6 +3195,8 @@ void propagate(struct redisCommand *cmd, int dbid, robj **argv, int argc,
  * so it is up to the caller to release the passed argv (but it is usually
  * stack allocated).  The function autoamtically increments ref count of
  * passed objects, so the caller does not need to. */
+/* 使用接口是用在一个命令要同步多个操作的情况，把相关的操作通过接口保存起来，
+ * 然后一次性把所有的操作同步给AOF或者副本 */
 void alsoPropagate(struct redisCommand *cmd, int dbid, robj **argv, int argc,
                    int target)
 {
@@ -3383,6 +3390,7 @@ void call(client *c, int flags) {
     /* Handle the alsoPropagate() API to handle commands that want to propagate
      * multiple separated commands. Note that alsoPropagate() is not affected
      * by CLIENT_PREVENT_PROP flag. */
+	/* 用来处理一次性需要传递多个分开的命令给副本或者AOF的情况 */
     if (server.also_propagate.numops) {
         int j;
         redisOp *rop;

@@ -1265,7 +1265,9 @@ int rdbSaveRio(rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
              * order to have a smaller final write. */
 			/*
 			 * 如果RDB文件是通过AOF rewrite来创建的，则从管道里面读取父进程在子进程存盘期间，
-			 * 一些额外的修改操作，读取到server.aof_child_diff中
+			 * 一些额外的修改操作，读取到server.aof_child_diff中，
+			 * 当前处理数据大小比最近一次处理数据大AOF_READ_DIFF_INTERVAL_BYTES(10M)，
+			 * 就尝试从管道里面读取父进程发给子进程新的操作数据
 			 */
             if (rdbflags & RDBFLAGS_AOF_PREAMBLE &&
                 rdb->processed_bytes > processed+AOF_READ_DIFF_INTERVAL_BYTES)
@@ -2688,7 +2690,7 @@ void saveCommand(client *c) {
 }
 
 /* BGSAVE [SCHEDULE] */
-/* BGSAVE命令响应逻辑函数，参数schedule用来标识，当有AOF子进程正在执行的时候，能执行这个命令，
+/* BGSAVE命令响应逻辑函数，参数schedule用来标识，当有AOF子进程正在执行的时候，能否执行这个命令，
  * 若为0，并且AOF子进程在执行，则命令执行失败，若为1，则设置server.rdb_bgsave_scheduled标识，
  * 等AOF子进程完成后，才触发RDB文件存盘。
  * */
