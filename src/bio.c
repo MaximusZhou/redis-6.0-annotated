@@ -74,9 +74,9 @@ static pthread_t bio_threads[BIO_NUM_OPS];
 
 /* 控制修改bio_jobs和bio_pending的互斥变量和条件变量 */
 static pthread_mutex_t bio_mutex[BIO_NUM_OPS];
-static pthread_cond_t bio_newjob_cond[BIO_NUM_OPS];
+static pthread_cond_t bio_newjob_cond[BIO_NUM_OPS]; /* 操作job队列的条件变量 */
 
-static pthread_cond_t bio_step_cond[BIO_NUM_OPS];
+static pthread_cond_t bio_step_cond[BIO_NUM_OPS]; /* 等待bio完成某一个job的条件变量 */
 static list *bio_jobs[BIO_NUM_OPS]; /* 每个job类型队列就是一个list */
 /* The following array is used to hold the number of pending jobs for every
  * OP type. This allows us to export the bioPendingJobsOfType() API that is
@@ -254,7 +254,7 @@ void *bioProcessBackgroundJobs(void *arg) {
 }
 
 /* Return the number of pending jobs of the specified type. */
-/* 返回指定类型job要处理的job数量 */
+/* 返回指定类型job要处理的数量 */
 unsigned long long bioPendingJobsOfType(int type) {
     unsigned long long val;
     pthread_mutex_lock(&bio_mutex[type]);
@@ -273,6 +273,9 @@ unsigned long long bioPendingJobsOfType(int type) {
  * This function is useful when from another thread, we want to wait
  * a bio.c thread to do more work in a blocking way.
  */
+/* 如果还有没有处理的job，这个接口会等待，直到有个job处理完成后，才返回，
+ * 这个接口返回剩余要处理的job数量，
+ * 这个接口用在一个线程在等待其他线程处理完成某个job的时候，是非常有用 */
 unsigned long long bioWaitStepOfType(int type) {
     unsigned long long val;
     pthread_mutex_lock(&bio_mutex[type]);
@@ -289,6 +292,7 @@ unsigned long long bioWaitStepOfType(int type) {
  * used only when it's critical to stop the threads for some reason.
  * Currently Redis does this only on crash (for instance on SIGSEGV) in order
  * to perform a fast memory check without other threads messing with memory. */
+/* 用来kill掉所有的bio线程 */
 void bioKillThreads(void) {
     int err, j;
 
