@@ -57,9 +57,17 @@ void aofClosePipes(void);
  * AOF_RW_BUF_BLOCK_SIZE bytes.
  * ------------------------------------------------------------------------- */
 
+/*
+ * 在AOF进程正在rewriting时，主进程用AOF rewrite buff用来保存相关的操作，
+ * 虽然仅仅把这些操作追加到buff后面，但是不能仅仅使用realloc来分配一个大block，
+ * 因为巨大的realloc不仅仅可能失败，而且可能出现copy数据。
+ */
+
+/* 正在rewrite的时候，使用block list来保存相应的操作，每个block的大小 */
 #define AOF_RW_BUF_BLOCK_SIZE (1024*1024*10)    /* 10 MB per block */
 
 typedef struct aofrwblock {
+	/* used字段保存buf中当前数据的大小 */
     unsigned long used, free;
     char buf[AOF_RW_BUF_BLOCK_SIZE];
 } aofrwblock;
@@ -67,6 +75,9 @@ typedef struct aofrwblock {
 /* This function free the old AOF rewrite buffer if needed, and initialize
  * a fresh new one. It tests for server.aof_rewrite_buf_blocks equal to NULL
  * so can be used for the first initialization as well. */
+/* 用释放旧AOF rewrite buff，并且初始化一个新的AOF rewrite buff，
+ * 在reids初始化的时候调用，即服务器启动的时候，
+ * 也会在aof rewrtie子进程结束时候，即接口backgroundRewriteDoneHandler调用 */
 void aofRewriteBufferReset(void) {
     if (server.aof_rewrite_buf_blocks)
         listRelease(server.aof_rewrite_buf_blocks);
@@ -76,6 +87,7 @@ void aofRewriteBufferReset(void) {
 }
 
 /* Return the current size of the AOF rewrite buffer. */
+/* 返回aof rewrite buff 当前数据大小 */
 unsigned long aofRewriteBufferSize(void) {
     listNode *ln;
     listIter li;
@@ -92,6 +104,11 @@ unsigned long aofRewriteBufferSize(void) {
 /* Event handler used to send data to the child process doing the AOF
  * rewrite. We send pieces of our AOF differences buffer so that the final
  * write when the child finishes the rewrite will be small. */
+/*
+ * 这个接口就是pip可写事件的响应函数，
+ * 给aof rewrite子进程发送新的操作数据，即保存在aof_rewrite_buf_blocks中的数据，
+ * 一个block全部发送到pip后，即从aof_rewrite_buf_blocks list中删除
+ */
 void aofChildWriteDiffData(aeEventLoop *el, int fd, void *privdata, int mask) {
     listNode *ln;
     aofrwblock *block;
@@ -104,6 +121,7 @@ void aofChildWriteDiffData(aeEventLoop *el, int fd, void *privdata, int mask) {
     while(1) {
         ln = listFirst(server.aof_rewrite_buf_blocks);
         block = ln ? ln->value : NULL;
+		/* 子进程通知不要再发送aof rewrite buff数据，或者没有数据要发送了，则删除管道写事件注册 */
         if (server.aof_stop_sending_diff || !block) {
             aeDeleteFileEvent(server.el,server.aof_pipe_write_data_to_child,
                               AE_WRITABLE);
@@ -113,10 +131,13 @@ void aofChildWriteDiffData(aeEventLoop *el, int fd, void *privdata, int mask) {
             nwritten = write(server.aof_pipe_write_data_to_child,
                              block->buf,block->used);
             if (nwritten <= 0) return;
+			/* 如果写了一部分，则把block中剩余的数据移到前面 */
             memmove(block->buf,block->buf+nwritten,block->used-nwritten);
             block->used -= nwritten;
             block->free += nwritten;
         }
+
+		/* 如果这个block写完了，则从list中删除这个block */
         if (block->used == 0) listDelNode(server.aof_rewrite_buf_blocks,ln);
     }
 }
@@ -124,7 +145,8 @@ void aofChildWriteDiffData(aeEventLoop *el, int fd, void *privdata, int mask) {
 /* Append data to the AOF rewrite buffer, allocating new blocks if needed. */
 /*
  * 把操作数据增加到AOF rewrite buffer中，
- * 当子进程正在rewrite的时候，父进程收到新的操作，则会调用这个接口，记录数据
+ * 当子进程正在rewrite的时候，父进程收到新的操作，则会调用这个接口，记录数据，
+ * AOF rewrite buff就是一个block list，如果最后一个block空间不够了，则分配新的block
  */
 void aofRewriteBufferAppend(unsigned char *s, unsigned long len) {
     listNode *ln = listLast(server.aof_rewrite_buf_blocks);
@@ -133,9 +155,11 @@ void aofRewriteBufferAppend(unsigned char *s, unsigned long len) {
     while(len) {
         /* If we already got at least an allocated block, try appending
          * at least some piece into it. */
+		/* 尽量放到最后一个block中 */
         if (block) {
             unsigned long thislen = (block->free < len) ? block->free : len;
             if (thislen) {  /* The current block is not already full. */
+				/* 先尽量把最后一个block填满 */
                 memcpy(block->buf+block->used, s, thislen);
                 block->used += thislen;
                 block->free -= thislen;
@@ -145,6 +169,7 @@ void aofRewriteBufferAppend(unsigned char *s, unsigned long len) {
         }
 
         if (len) { /* First block to allocate, or need another block. */
+			/* 最后一个block放不下，则分配一个新的block，并且放链表最后 */
             int numblocks;
 
             block = zmalloc(sizeof(*block));
@@ -154,6 +179,7 @@ void aofRewriteBufferAppend(unsigned char *s, unsigned long len) {
 
             /* Log every time we cross more 10 or 100 blocks, respectively
              * as a notice or warning. */
+			/* 没分配10个block就增加一个log */
             numblocks = listLength(server.aof_rewrite_buf_blocks);
             if (((numblocks+1) % 10) == 0) {
                 int level = ((numblocks+1) % 100) == 0 ? LL_WARNING :
@@ -166,6 +192,7 @@ void aofRewriteBufferAppend(unsigned char *s, unsigned long len) {
 
     /* Install a file event to send data to the rewrite child if there is
      * not one already. */
+	/* 有数据可以发送给子进程了，如果管道写事件没有注册，则注册一个写事件 */
     if (aeGetFileEvents(server.el,server.aof_pipe_write_data_to_child) == 0) {
         aeCreateFileEvent(server.el, server.aof_pipe_write_data_to_child,
             AE_WRITABLE, aofChildWriteDiffData, NULL);
@@ -176,7 +203,7 @@ void aofRewriteBufferAppend(unsigned char *s, unsigned long len) {
  * fd. If a short write or any other error happens -1 is returned,
  * otherwise the number of bytes written is returned. */
 /*
- * 把还没有发到子进程的数据，即当前aof_rewrite_buf_blocks中的数据，追加到AOF文件中，
+ * 把还没有发到子进程的数据，即当前aof_rewrite_buf_blocks中剩余的数据，追加到AOF文件中，
  * 只要aof_rewrite_buf_blocks中有任何数据，没有成功写入fd，则返回-1，否则返回写入的总的数据
  */
 ssize_t aofRewriteBufferWrite(int fd) {
@@ -184,6 +211,7 @@ ssize_t aofRewriteBufferWrite(int fd) {
     listIter li;
     ssize_t count = 0;
 
+	/* 遍历list中每个block */
     listRewind(server.aof_rewrite_buf_blocks,&li);
     while((ln = listNext(&li))) {
         aofrwblock *block = listNodeValue(ln);
@@ -207,7 +235,7 @@ ssize_t aofRewriteBufferWrite(int fd) {
 
 /* Return true if an AOf fsync is currently already in progress in a
  * BIO thread. */
-/* 是否后台有BIO线程在做aof buff fysnc同步操作 */
+/* 后台是否还有aof buff等待调用fysnc操作，即后台正在进行fsync操作 */
 int aofFsyncInProgress(void) {
     return bioPendingJobsOfType(BIO_AOF_FSYNC) != 0;
 }
@@ -220,6 +248,10 @@ void aof_background_fsync(int fd) {
 }
 
 /* Kills an AOFRW child process if exists */
+/*
+ * kill掉AOF子进程，是否aof rewrite buff，以及关闭所有的通信pipe
+ * kill掉AOF子进程，即给子进程发送SIGUSR1信号，子进程处理这个信号的响应函数里，子进程主动退出
+ */
 void killAppendOnlyChild(void) {
     int statloc;
     /* No AOFRW child? return. */
@@ -228,6 +260,7 @@ void killAppendOnlyChild(void) {
     serverLog(LL_NOTICE,"Killing running AOF rewrite child: %ld",
         (long) server.aof_child_pid);
     if (kill(server.aof_child_pid,SIGUSR1) != -1) {
+		/* 等待子进程退出 */
         while(wait3(&statloc,0,NULL) != server.aof_child_pid);
     }
     /* Reset the buffer accumulating changes while the child saves. */
@@ -243,6 +276,7 @@ void killAppendOnlyChild(void) {
 
 /* Called when the user switches from "appendonly yes" to "appendonly no"
  * at runtime using the CONFIG command. */
+/* 响应CONFIG命令 appendonly no的逻辑 */
 void stopAppendOnly(void) {
     serverAssert(server.aof_state != AOF_OFF);
     flushAppendOnlyFile(1);
@@ -349,7 +383,11 @@ ssize_t aofWrite(int fd, const char *buf, size_t len) {
  * However if force is set to 1 we'll write regardless of the background
  * fsync. */
 /* 把server.aof_buf中记录的操作写到磁盘上，
- * 这个接口会在beforeSleep和serverCron中调用 */
+ * 这个接口会在beforeSleep和serverCron中调用
+ * 这个接口要在beforeSleep中调用，是因为在回复客户端之前，需要把AOF buff数据写到磁盘上
+ * 要在serverCron中调用，是因为可能后台fsync操作在执行，这时候默认不调用write操作，把aof_buf中数据写到磁盘上，
+ * 因此需要在serverCron中调用，把这些aof_buf数据写到磁盘上
+ */
 #define AOF_WRITE_LOG_ERROR_RATE 30 /* Seconds between errors logging. */
 void flushAppendOnlyFile(int force) {
     ssize_t nwritten;
@@ -362,7 +400,7 @@ void flushAppendOnlyFile(int force) {
          * called only when aof buffer is not empty, so if users
          * stop write commands before fsync called in one second,
          * the data in page cache cannot be flushed in time. */
-		/* */
+		/* 就算aof_buf中没有数据要写，但是之前数据只是调用write写到磁盘，没有调用fsync，则就要尝试去fsync */
         if (server.aof_fsync == AOF_FSYNC_EVERYSEC &&
             server.aof_fsync_offset != server.aof_current_size &&
             server.unixtime > server.aof_last_fsync &&
@@ -380,7 +418,8 @@ void flushAppendOnlyFile(int force) {
         /* With this append fsync policy we do background fsyncing.
          * If the fsync is still in progress we can try to delay
          * the write for a couple of seconds. */
-		/* 后台同步线程还没有结束，又尝试把新的aof buff写到磁盘上，说明io非常繁忙 */
+		/* 后台同步线程还没有结束，又尝试把新的aof buff写到磁盘上，说明io非常繁忙，
+		 * 这时不去调用write操作，是因为fsync操作可能阻塞write操作 */
         if (sync_in_progress) {
             if (server.aof_flush_postponed_start == 0) {
                 /* No previous write postponing, remember that we are
@@ -1643,6 +1682,7 @@ error:
     return C_ERR;
 }
 
+/* 关闭父进程与子进程所有的管道和删除相应事件 */
 void aofClosePipes(void) {
     aeDeleteFileEvent(server.el,server.aof_pipe_read_ack_from_child,AE_READABLE);
     aeDeleteFileEvent(server.el,server.aof_pipe_write_data_to_child,AE_WRITABLE);
@@ -1743,6 +1783,7 @@ void bgrewriteaofCommand(client *c) {
     }
 }
 
+/* 创建AOF子进程中创建的临时文件 */
 void aofRemoveTempFile(pid_t childpid) {
     char tmpfile[256];
 
