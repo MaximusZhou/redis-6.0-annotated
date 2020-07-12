@@ -126,6 +126,7 @@
 /* flags on the purpose of rdb save or load */
 /* RDB文件加载的时候，RDB文件以什么样方式存在，比如在AOF文件前面部分数据 */
 #define RDBFLAGS_NONE 0                 /* No special RDB loading. */
+/* 这个标识表示，AOF文件前面部分是一个RDB文件 */
 #define RDBFLAGS_AOF_PREAMBLE (1<<0)    /* Load/save the RDB as AOF preamble. */
 #define RDBFLAGS_REPLICATION (1<<1)     /* Load/save for SYNC. */
 #define RDBFLAGS_ALLOW_DUP (1<<2)       /* Allow duplicated keys when loading.*/
