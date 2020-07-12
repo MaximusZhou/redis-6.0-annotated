@@ -555,7 +555,7 @@ void flushAppendOnlyFile(int force) {
             server.aof_last_write_status = C_OK;
         }
     }
-	/* server.aof_current_size用来保存当前aof文件大小，
+	/* server.aof_current_size用来保存当前aof文件大小，注意不是aof_buf的大小，
 	 * 但是这个文件数据可能还没写到磁盘上，只是完成调用系统接口write */
     server.aof_current_size += nwritten;
 
@@ -601,7 +601,10 @@ try_fsync:
     }
 }
 
-/* 把命令的参数格式化为用于AOF保存的字符串，按resp协议的方式来格式化 */
+/* 
+ * 把操作命令和参数转换为字符串，保存到dst中，字符串的格式是resp协议格式，
+ * 把命令的参数格式化为 用于AOF保存 的字符串，按resp协议的方式来格式化
+ */
 sds catAppendOnlyGenericCommand(sds dst, int argc, robj **argv) {
     char buf[32];
     int len, j;
@@ -634,6 +637,8 @@ sds catAppendOnlyGenericCommand(sds dst, int argc, robj **argv) {
  * This command is used in order to translate EXPIRE and PEXPIRE commands
  * into PEXPIREAT command so that we retain precision in the append only
  * file, and the time is always absolute and not relative. */
+/* 在保存EXPIRE/PEXPIREAT/EXPIREAT命令操作时候，这个接口用来把他们转换为PEXPIREAT命令来保存，
+ * 即相对时间转换为绝对时间来保存，保存的绝对时间是以毫秒为单位的 */
 sds catAppendOnlyExpireAtCommand(sds buf, struct redisCommand *cmd, robj *key, robj *seconds) {
     long long when;
     robj *argv[3];
@@ -664,7 +669,7 @@ sds catAppendOnlyExpireAtCommand(sds buf, struct redisCommand *cmd, robj *key, r
     return buf;
 }
 
-/* 记录相关的操作，即向aof_buf中写入数据，通常是有修改db数据的操作才记录 */
+/* 外部模块调用，用来记录相关的操作，即向aof_buf中写入数据，通常是有修改db数据的操作才记录 */
 void feedAppendOnlyFile(struct redisCommand *cmd, int dictid, robj **argv, int argc) {
     sds buf = sdsempty();
     robj *tmpargv[3];
@@ -682,7 +687,7 @@ void feedAppendOnlyFile(struct redisCommand *cmd, int dictid, robj **argv, int a
     }
 
 	/* 把不同类型的命令用不同的方法转换为字符串保存，即用一个字符串表示这个操作，
-	 * 这个字符串表示的格式是在就是RESP协议格式 */
+	 * 这个字符串表示的格式就是RESP协议格式 */
     if (cmd->proc == expireCommand || cmd->proc == pexpireCommand ||
         cmd->proc == expireatCommand) {
         /* Translate EXPIRE/PEXPIRE/EXPIREAT into PEXPIREAT */
@@ -749,6 +754,9 @@ void feedAppendOnlyFile(struct redisCommand *cmd, int dictid, robj **argv, int a
 
 /* In Redis commands are always executed in the context of a client, so in
  * order to load the append only file we need to create a fake client. */
+/* 在加载AOF文件的时候，调用这个接口创建一个虚假的客户端，用来执行AOF文件中的命令，
+ * 然后来构建db内存，需要构建一个虚拟的客户端来构建的原因是，
+ * redis命令执行的时候总是需要一个客户端上下文环境 */
 struct client *createAOFClient(void) {
     struct client *c = zmalloc(sizeof(*c));
 
@@ -805,7 +813,9 @@ int loadAppendOnlyFile(char *filename) {
     struct redis_stat sb;
     int old_aof_state = server.aof_state;
     long loops = 0;
+	/* 加载完成后，真正加载数据的位置 */
     off_t valid_up_to = 0; /* Offset of latest well-formed command loaded. */
+	/* 保存在加载MULTI命令前对应的位置 */
     off_t valid_before_multi = 0; /* Offset before MULTI command loaded. */
 
     if (fp == NULL) {
@@ -827,6 +837,7 @@ int loadAppendOnlyFile(char *filename) {
 
     /* Temporarily disable AOF, to prevent EXEC from feeding a MULTI
      * to the same file we're about to read. */
+	/* 临时关闭AOF，是为了防止在加载db的时候，虚拟客户端执行命令向AOF文件中写入数据 */
     server.aof_state = AOF_OFF;
 
     fakeClient = createAOFClient();
@@ -892,6 +903,7 @@ int loadAppendOnlyFile(char *filename) {
         fakeClient->argc = argc;
         fakeClient->argv = argv;
 
+		/* 按照resp格式解析命令参数 */
         for (j = 0; j < argc; j++) {
             /* Parse the argument len. */
             char *readres = fgets(buf,sizeof(buf),fp);
@@ -936,10 +948,12 @@ int loadAppendOnlyFile(char *filename) {
         if (cmd == server.multiCommand) valid_before_multi = valid_up_to;
 
         /* Run the command in the context of a fake client */
+		/* 在虚拟客户端执行命令 */
         fakeClient->cmd = fakeClient->lastcmd = cmd;
         if (fakeClient->flags & CLIENT_MULTI &&
             fakeClient->cmd->proc != execCommand)
         {
+			/* 处理mulit命令的情况 */
             queueMultiCommand(fakeClient);
         } else {
             cmd->proc(fakeClient);
@@ -1034,6 +1048,7 @@ fmterr: /* Format error. */
 
 /* Delegate writing an object to writing a bulk string or bulk long long.
  * This is not placed in rio.c since that adds the server.h dependency. */
+/* 向rio中写入一个bulk string或者long long类型数据 */
 int rioWriteBulkObject(rio *r, robj *obj) {
     /* Avoid using getDecodedObject to help copy-on-write (we are often
      * in a child process when this function is called). */
@@ -1048,6 +1063,7 @@ int rioWriteBulkObject(rio *r, robj *obj) {
 
 /* Emit the commands needed to rebuild a list object.
  * The function returns 0 on error, 1 on success. */
+/* 把list对象按resp协议格式化保存到rio中 */
 int rewriteListObject(rio *r, robj *key, robj *o) {
     long long count = 0, items = listTypeLength(o);
 
@@ -1082,6 +1098,7 @@ int rewriteListObject(rio *r, robj *key, robj *o) {
 
 /* Emit the commands needed to rebuild a set object.
  * The function returns 0 on error, 1 on success. */
+/* 把set对象按resp协议格式化保存到rio中 */
 int rewriteSetObject(rio *r, robj *key, robj *o) {
     long long count = 0, items = setTypeSize(o);
 
@@ -1129,6 +1146,7 @@ int rewriteSetObject(rio *r, robj *key, robj *o) {
 
 /* Emit the commands needed to rebuild a sorted set object.
  * The function returns 0 on error, 1 on success. */
+/* 把sorted set象按resp协议格式化保存到rio中 */
 int rewriteSortedSetObject(rio *r, robj *key, robj *o) {
     long long count = 0, items = zsetLength(o);
 
@@ -1224,6 +1242,7 @@ static int rioWriteHashIteratorCursor(rio *r, hashTypeIterator *hi, int what) {
 
 /* Emit the commands needed to rebuild a hash object.
  * The function returns 0 on error, 1 on success. */
+/* 把hash对象按resp协议格式化保存到rio中 */
 int rewriteHashObject(rio *r, robj *key, robj *o) {
     hashTypeIterator *hi;
     long long count = 0, items = hashTypeLength(o);
@@ -1288,6 +1307,7 @@ int rioWriteStreamPendingEntry(rio *r, robj *key, const char *groupname, size_t 
 
 /* Emit the commands needed to rebuild a stream object.
  * The function returns 0 on error, 1 on success. */
+/* 把stream对象按resp协议格式化保存到rio中 */
 int rewriteStreamObject(rio *r, robj *key, robj *o) {
     stream *s = o->ptr;
     streamIterator si;
@@ -1388,6 +1408,7 @@ int rewriteStreamObject(rio *r, robj *key, robj *o) {
 /* Call the module type callback in order to rewrite a data type
  * that is exported by a module and is not handled by Redis itself.
  * The function returns 0 on error, 1 on success. */
+/* 把moudle按resp协议格式化保存到rio中 */
 int rewriteModuleObject(rio *r, robj *key, robj *o) {
     RedisModuleIO io;
     moduleValue *mv = o->ptr;
@@ -1575,7 +1596,8 @@ int rewriteAppendOnlyFile(char *filename) {
     /* We read the ACK from the server using a 10 seconds timeout. Normally
      * it should reply ASAP, but just in case we lose its reply, we are sure
      * the child will eventually get terminated. */
-	/* 从父进程读取ACK，确保父进程不会再向管道里面发送diff操作数据了 */
+	/* 从父进程读取ACK，确保父进程不会再向管道里面发送diff操作数据了，
+	 * 注意这个地方会设置一个超时 */
     if (syncRead(server.aof_pipe_read_ack_from_parent,&byte,1,5000) != 1 ||
         byte != '!') goto werr;
     serverLog(LL_NOTICE,"Parent agreed to stop sending diffs. Finalizing AOF...");
@@ -1626,6 +1648,8 @@ werr:
 /* This event handler is called when the AOF rewriting child sends us a
  * single '!' char to signal we should stop sending buffer diffs. The
  * parent sends a '!' as well to acknowledge. */
+/* 子进程向父进程发送ack 对应的管道 读事件响应函数，父进程收到!符号后，就不会再向
+ * 子进程发送aof buff diff数据，子进程也会向父进程发送!符号，告诉父进程收到ACK了 */
 void aofChildPipeReadable(aeEventLoop *el, int fd, void *privdata, int mask) {
     char byte;
     UNUSED(el);
@@ -1634,18 +1658,22 @@ void aofChildPipeReadable(aeEventLoop *el, int fd, void *privdata, int mask) {
 
     if (read(fd,&byte,1) == 1 && byte == '!') {
         serverLog(LL_NOTICE,"AOF rewrite child asks to stop sending diffs.");
+		/* 设置标识，后面父进程收到的操作，放在aof_rewrite_buf中的数据不会在发送给子进程了 */
         server.aof_stop_sending_diff = 1;
+		/* 发送给子进程告知收到了停止发送的符号 */
         if (write(server.aof_pipe_write_ack_to_child,"!",1) != 1) {
             /* If we can't send the ack, inform the user, but don't try again
              * since in the other side the children will use a timeout if the
              * kernel can't buffer our write, or, the children was
              * terminated. */
+			/* 发送失败也不会再发送了，因为子进程在等待读取整个数据时候，会设置一个超时的 */
             serverLog(LL_WARNING,"Can't send ACK to AOF child: %s",
                 strerror(errno));
         }
     }
     /* Remove the handler since this can be called only one time during a
      * rewrite. */
+	/* 这个接口只可能在子进程快退出的时候 才在父进程响应，只会调用一次，因此删除相应的读事件 */
     aeDeleteFileEvent(server.el,server.aof_pipe_read_ack_from_child,AE_READABLE);
 }
 
@@ -1654,6 +1682,13 @@ void aofChildPipeReadable(aeEventLoop *el, int fd, void *privdata, int mask) {
  * and two other pipes used by the children to signal it finished with
  * the rewrite so no more data should be written, and another for the
  * parent to acknowledge it understood this new condition. */
+/*
+ * 创建在rewrite期间，父子进程通信的pip，一共三个：
+ * 1. 用于发送rewrite期间，发送父进程在此期间新收到的操作，即aof_rewrite_buf中的数据
+ * 2. 用于子进程通知父进程不要再发送aof_rewrite_buf数据了，子进程快退出了
+ * 3. 用于父进程通知子进程，父进程收到相应通知了，自己不再发送aof_rewrite_buf给子进程了
+ * 管道fds[0]用于读，fds[1]用于写
+ */
 int aofCreatePipes(void) {
     int fds[6] = {-1, -1, -1, -1, -1, -1};
     int j;
@@ -1761,6 +1796,8 @@ int rewriteAppendOnlyFileBackground(void) {
          * feedAppendOnlyFile() to issue a SELECT command, so the differences
          * accumulated by the parent into server.aof_rewrite_buf will start
          * with a SELECT statement and it will be safe to merge. */
+		/* 是为了方便写到aof_rewrite_buf中第一个操作是SELECT(在接口feedAppendOnlyFile中可以看到)，
+		 * 这样子进程就能够安全的merge */
         server.aof_selected_db = -1;
         replicationScriptCacheFlush();
         return C_OK;
@@ -1783,7 +1820,7 @@ void bgrewriteaofCommand(client *c) {
     }
 }
 
-/* 创建AOF子进程中创建的临时文件 */
+/* 删除AOF子进程中创建的临时文件 */
 void aofRemoveTempFile(pid_t childpid) {
     char tmpfile[256];
 
@@ -1816,7 +1853,8 @@ void aofUpdateCurrentSize(void) {
 
 /* A background append only file rewriting (BGREWRITEAOF) terminated its work.
  * Handle this. */
-/* aof rewrite 子进程退出的时候，主进程收到相应信息后，在主进程中调用 */
+/* aof rewrite 子进程退出的时候，主进程收到相应信息后，在主进程中调用，
+ * 用来完成AOF rewrite剩余的工作 */
 void backgroundRewriteDoneHandler(int exitcode, int bysignal) {
     if (!bysignal && exitcode == 0) {
         int newfd, oldfd;
@@ -1879,6 +1917,13 @@ void backgroundRewriteDoneHandler(int exitcode, int bysignal) {
          * guarantee atomicity for this switch has already happened by then, so
          * we don't care what the outcome or duration of that close operation
          * is, as long as the file descriptor is released again. */
+		/*
+		 * 下面要做的事情就是，把上面的临时文件rename为配置的文件，
+		 * 并且把上面打开的fd设置为接下来AOF使用的fd,
+		 * 但是不想使用close 或 rename时候，因为删除文件阻塞服务器
+		 */
+		
+		/* 把aof_filename至少有一个fd引用，即oldfd */
         if (server.aof_fd == -1) {
             /* AOF disabled */
 
@@ -1894,6 +1939,8 @@ void backgroundRewriteDoneHandler(int exitcode, int bysignal) {
         /* Rename the temporary file. This will not unlink the target file if
          * it exists, because we reference it with "oldfd". */
         latencyStartMonitor(latency);
+
+		/* 原来的server.aof_filename 对应的fd文件不会删除，因为至少有oldfd引用它 */
         if (rename(tmpfile,server.aof_filename) == -1) {
             serverLog(LL_WARNING,
                 "Error trying to rename the temporary AOF file %s into %s: %s",
@@ -1914,6 +1961,8 @@ void backgroundRewriteDoneHandler(int exitcode, int bysignal) {
         } else {
             /* AOF enabled, replace the old fd with the new one. */
             oldfd = server.aof_fd;
+
+			/* 用新的文件保存后面的操作记录 */
             server.aof_fd = newfd;
             if (server.aof_fsync == AOF_FSYNC_ALWAYS)
                 redis_fsync(newfd);
@@ -1938,6 +1987,7 @@ void backgroundRewriteDoneHandler(int exitcode, int bysignal) {
             server.aof_state = AOF_ON;
 
         /* Asynchronously close the overwritten AOF. */
+		/* 异步关闭oldfd，就是为了防止阻塞 */
         if (oldfd != -1) bioCreateBackgroundJob(BIO_CLOSE_FILE,(void*)(long)oldfd,NULL,NULL);
 
         serverLog(LL_VERBOSE,
