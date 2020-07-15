@@ -2460,8 +2460,10 @@ write_error: /* Handle sendSynchronousCommand(SYNC_CMD_WRITE) errors. */
     goto error;
 }
 
+/* 副本通过调用这个接口，开始尝试连接master */
 int connectWithMaster(void) {
     server.repl_transfer_s = server.tls_replication ? connCreateTLS() : connCreateSocket();
+	/* 以非阻塞的方式请求连接master，并且设置可写事件的回调函数为syncWithMaster */
     if (connConnect(server.repl_transfer_s, server.masterhost, server.masterport,
                 NET_FIRST_BIND_ADDR, syncWithMaster) == C_ERR) {
         serverLog(LL_WARNING,"Unable to connect to MASTER: %s",
@@ -2509,6 +2511,7 @@ void replicationAbortSyncTransfer(void) {
  * the replication state (server.repl_state) set to REPL_STATE_CONNECT.
  *
  * Otherwise zero is returned and no operation is perforemd at all. */
+/* 取消副本与原来master的连接 */
 int cancelReplicationHandshake(void) {
     if (server.repl_state == REPL_STATE_TRANSFER) {
         replicationAbortSyncTransfer();
@@ -2525,7 +2528,8 @@ int cancelReplicationHandshake(void) {
 }
 
 /* Set replication to the specified master address and port. */
-/* 根据ip和端口，设置redis实例的master */
+/* 根据ip和端口，设置redis实例的master，
+ * 命令replicaof host port 最终调用就是这个接口 */
 void replicationSetMaster(char *ip, int port) {
     int was_master = server.masterhost == NULL;
 
@@ -2539,11 +2543,12 @@ void replicationSetMaster(char *ip, int port) {
 
     /* Force our slaves to resync with us as well. They may hopefully be able
      * to partially resync with us, but we can notify the replid change. */
-    disconnectSlaves();
+    disconnectSlaves(); /* 关闭当前所有slave链接，方便重现同步 */
     cancelReplicationHandshake();
     /* Before destroying our master state, create a cached master using
      * our own parameters, to later PSYNC with the new master. */
     if (was_master) {
+		/* 原来redis是master */
         replicationDiscardCachedMaster();
         replicationCacheMasterUsingMyself();
     }
@@ -3166,6 +3171,7 @@ long long replicationGetSlaveOffset(void) {
 /* --------------------------- REPLICATION CRON  ---------------------------- */
 
 /* Replication cron function, called 1 time per second. */
+/* 在serverCron中，每秒调用一次这个接口 */
 void replicationCron(void) {
     static long long replication_cron_loops = 0;
 
@@ -3199,6 +3205,7 @@ void replicationCron(void) {
     if (server.repl_state == REPL_STATE_CONNECT) {
         serverLog(LL_NOTICE,"Connecting to MASTER %s:%d",
             server.masterhost, server.masterport);
+		/* 副本开始连接master */
         if (connectWithMaster() == C_OK) {
             serverLog(LL_NOTICE,"MASTER <-> REPLICA sync started");
         }

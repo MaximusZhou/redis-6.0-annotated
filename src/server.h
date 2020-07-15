@@ -1305,6 +1305,7 @@ struct redisServer {
 	/* 副本对应的master端口，直接从配置文件中读取 */
     int masterport;                 /* Port of master */
     int repl_timeout;               /* Timeout after N seconds of master idle */
+	/* 副本中保存对应master的客户端 */
     client *master;     /* Client that is master for this slave */
     client *cached_master; /* Cached master to be reused for PSYNC. */
     int repl_syncio_timeout; /* Timeout for synchronous I/O calls */
@@ -1448,6 +1449,7 @@ struct redisServer {
     size_t system_memory_size;  /* Total memory in system as reported by OS */
     /* TLS Configuration */
     int tls_cluster;
+	/* 副本是否以TLS方式连接master，配置tls-replication决定 */
     int tls_replication;
     int tls_auth_clients;
     redisTLSContextConfig tls_ctx_config;

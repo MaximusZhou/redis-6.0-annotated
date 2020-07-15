@@ -1016,6 +1016,8 @@ static void freeClientArgv(client *c) {
 /* Close all the slaves connections. This is useful in chained replication
  * when we resync with our own master and want to force all our slaves to
  * resync with us as well. */
+/* 关闭当前所有的slave连接，当redis实例从master转换为slave调用接口，
+ * 方便副本链，重新同步新的master */
 void disconnectSlaves(void) {
     listIter li;
     listNode *ln;
