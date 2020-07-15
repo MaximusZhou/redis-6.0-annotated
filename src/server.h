@@ -285,6 +285,7 @@ typedef long long ustime_t; /* microsecond time type. */
 /* Slave replication state. Used in server.repl_state for slaves to remember
  * what to do next. */
 #define REPL_STATE_NONE 0 /* No active replication */
+/* REPL_STATE_CONNECT 副本启动时候的状态 */
 #define REPL_STATE_CONNECT 1 /* Must connect to master */
 #define REPL_STATE_CONNECTING 2 /* Connecting to master */
 /* --- Handshake states, must be ordered --- */
@@ -1299,7 +1300,9 @@ struct redisServer {
     /* Replication (slave) */
     char *masteruser;               /* AUTH with this user and masterauth with master */
     char *masterauth;               /* AUTH with this password with master */
+	/* 副本对应的master地址，直接从配置文件中读取，这个字段不为NULL，说明这个实例是一个副本 */
     char *masterhost;               /* Hostname of master */
+	/* 副本对应的master端口，直接从配置文件中读取 */
     int masterport;                 /* Port of master */
     int repl_timeout;               /* Timeout after N seconds of master idle */
     client *master;     /* Client that is master for this slave */
