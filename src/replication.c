@@ -1904,6 +1904,8 @@ char *sendSynchronousCommand(int flags, connection *conn, ...) {
      * protocol to make sure correct arguments are sent. This function
      * is not safe for all binary data. */
     if (flags & SYNC_CMD_WRITE) {
+		/* 向master发送数据，发送数据方式使用resp格式协议，
+		 * 即与通常redis客户端发送数据协议格式一样 */
         char *arg;
         va_list ap;
         sds cmd = sdsempty();
@@ -1926,6 +1928,7 @@ char *sendSynchronousCommand(int flags, connection *conn, ...) {
         sdsfree(cmdargs);
 
         /* Transfer command to the server. */
+		/* 阻塞同步向master发送数据 */
         if (connSyncWrite(conn,cmd,sdslen(cmd),server.repl_syncio_timeout*1000)
             == -1)
         {
@@ -1940,6 +1943,7 @@ char *sendSynchronousCommand(int flags, connection *conn, ...) {
     if (flags & SYNC_CMD_READ) {
         char buf[256];
 
+		/* 阻塞同步向master读数据 */
         if (connSyncReadLine(conn,buf,sizeof(buf),server.repl_syncio_timeout*1000)
             == -1)
         {
@@ -2166,6 +2170,11 @@ int slaveTryPartialResynchronization(connection *conn, int read_reply) {
 
 /* This handler fires when the non blocking connect was able to
  * establish a connection with the master. */
+/* 副本请求连接的时候，连接建立成功后，回调的接口，
+ * 建立建立后，这个接口改成可读事件的回调函数，
+ * 并且副本状态转换，逻辑都是阻塞发送数据，然后等待事件可读，然后调用这个接口，
+ * 根据不同的副本状态，执行不同的逻辑，
+ * 此外可以发现副本与master通信完全使用命令的方式，相当于副本是一个特殊的客户端 */
 void syncWithMaster(connection *conn) {
     char tmpfile[256], *err = NULL;
     int dfd = -1, maxtries = 5;
@@ -2173,6 +2182,7 @@ void syncWithMaster(connection *conn) {
 
     /* If this event fired after the user turned the instance into a master
      * with SLAVEOF NO ONE we must just return ASAP. */
+	/* 状态为REPL_STATE_NONE，说明此时redis实例为master了，则关闭原来master连接请求 */
     if (server.repl_state == REPL_STATE_NONE) {
         connClose(conn);
         return;
@@ -2180,6 +2190,7 @@ void syncWithMaster(connection *conn) {
 
     /* Check for errors in the socket: after a non blocking connect() we
      * may find that the socket is in error state. */
+	/* 请求连接出现错误，比如请求连接超时*/
     if (connGetState(conn) != CONN_STATE_CONNECTED) {
         serverLog(LL_WARNING,"Error condition on socket for SYNC: %s",
                 connGetLastError(conn));
@@ -2188,14 +2199,18 @@ void syncWithMaster(connection *conn) {
 
     /* Send a PING to check the master is able to reply without errors. */
     if (server.repl_state == REPL_STATE_CONNECTING) {
+		/* 与master建立连接后，执行到的第一个逻辑位置 */
         serverLog(LL_NOTICE,"Non blocking connect for SYNC fired the event.");
         /* Delete the writable event so that the readable event remains
          * registered and we can wait for the PONG reply. */
+		/* 删除可写事件回调函数，注册可读事件，仍然为这个函数 */
         connSetReadHandler(conn, syncWithMaster);
         connSetWriteHandler(conn, NULL);
+		/* 副本从初始的REPL_STATE_CONNECTING状态转换为REPL_STATE_RECEIVE_PONG状态 */
         server.repl_state = REPL_STATE_RECEIVE_PONG;
         /* Send the PING, don't check for errors at all, we have the timeout
          * that will take care about this. */
+		/* 给master发送PING，等待接收PONG */
         err = sendSynchronousCommand(SYNC_CMD_WRITE,conn,"PING",NULL);
         if (err) goto write_error;
         return;
@@ -2203,6 +2218,7 @@ void syncWithMaster(connection *conn) {
 
     /* Receive the PONG command. */
     if (server.repl_state == REPL_STATE_RECEIVE_PONG) {
+		/* 触发可读事件了，则阻塞读数据 */
         err = sendSynchronousCommand(SYNC_CMD_READ,conn,NULL);
 
         /* We accept only two replies as valid, a positive +PONG reply
@@ -2222,15 +2238,20 @@ void syncWithMaster(connection *conn) {
                 "Master replied to PING, replication can continue...");
         }
         sdsfree(err);
+		/* master回复PONG，表示允许连接，
+		 * 副本状态从 REPL_STATE_RECEIVE_PONG 转换为 REPL_STATE_SEND_AUTH */
         server.repl_state = REPL_STATE_SEND_AUTH;
     }
 
     /* AUTH with the master if required. */
     if (server.repl_state == REPL_STATE_SEND_AUTH) {
         if (server.masteruser && server.masterauth) {
+			/* 需要验证，则发送验证命令和相关的信息 */
             err = sendSynchronousCommand(SYNC_CMD_WRITE,conn,"AUTH",
                                          server.masteruser,server.masterauth,NULL);
             if (err) goto write_error;
+			/* 副本状态从REPL_STATE_SEND_AUTH 到 REPL_STATE_RECEIVE_AUTH 状态，
+			 * 即等待验证回复 */
             server.repl_state = REPL_STATE_RECEIVE_AUTH;
             return;
         } else if (server.masterauth) {
@@ -2239,6 +2260,8 @@ void syncWithMaster(connection *conn) {
             server.repl_state = REPL_STATE_RECEIVE_AUTH;
             return;
         } else {
+			/* 不需要验证的话，副本状态直接从REPL_STATE_RECEIVE_AUTH 到
+			 * REPL_STATE_SEND_PORT */
             server.repl_state = REPL_STATE_SEND_PORT;
         }
     }
@@ -2252,6 +2275,7 @@ void syncWithMaster(connection *conn) {
             goto error;
         }
         sdsfree(err);
+		/* 验证成功 */
         server.repl_state = REPL_STATE_SEND_PORT;
     }
 

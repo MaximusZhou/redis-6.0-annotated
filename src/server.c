@@ -3856,6 +3856,7 @@ int writeCommandsDeniedByDiskError(void) {
 
 /* The PING command. It works in a different way if the client is in
  * in Pub/Sub mode. */
+/* PING命令响应接口 */
 void pingCommand(client *c) {
     /* The command takes zero or one arguments. */
     if (c->argc > 2) {
@@ -3873,6 +3874,7 @@ void pingCommand(client *c) {
             addReplyBulk(c,c->argv[1]);
     } else {
         if (c->argc == 1)
+			/* 回复PONG */
             addReply(c,shared.pong);
         else
             addReplyBulk(c,c->argv[1]);

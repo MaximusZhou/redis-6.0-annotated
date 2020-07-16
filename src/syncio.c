@@ -40,12 +40,20 @@
  *
  * All the functions take the timeout in milliseconds. */
 
+/*
+ * 本模块提供同步IO操作相关的接口
+ * 在redis大部分IO操作都是异步的，除了SYNC和MIGRATE命令需要用到同步IO阻塞IO操作
+ */
+
 #define SYNCIO__RESOLUTION 10 /* Resolution in milliseconds */
 
 /* Write the specified payload to 'fd'. If writing the whole payload will be
  * done within 'timeout' milliseconds the operation succeeds and 'size' is
  * returned. Otherwise the operation fails, -1 is returned, and an unspecified
  * partial write could be performed against the file descriptor. */
+/*
+ * 阻塞写数据，如果在timeout时间内写完，则返回size，否则超时，表示写了一部分，这时候返回-1
+ */
 ssize_t syncWrite(int fd, char *ptr, ssize_t size, long long timeout) {
     ssize_t nwritten, ret = size;
     long long start = mstime();
@@ -58,6 +66,7 @@ ssize_t syncWrite(int fd, char *ptr, ssize_t size, long long timeout) {
 
         /* Optimistically try to write before checking if the file descriptor
          * is actually writable. At worst we get EAGAIN. */
+		/* 先尝试尽量写 */
         nwritten = write(fd,ptr,size);
         if (nwritten == -1) {
             if (errno != EAGAIN) return -1;

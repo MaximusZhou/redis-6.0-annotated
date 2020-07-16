@@ -1308,6 +1308,7 @@ struct redisServer {
 	/* 副本中保存对应master的客户端 */
     client *master;     /* Client that is master for this slave */
     client *cached_master; /* Cached master to be reused for PSYNC. */
+	/* 副本同步向master读写数据超时时间，以秒为单位 */
     int repl_syncio_timeout; /* Timeout for synchronous I/O calls */
     int repl_state;          /* Replication status if the instance is a slave */
     off_t repl_transfer_size; /* Size of RDB to read from master during sync. */
