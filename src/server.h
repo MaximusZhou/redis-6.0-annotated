@@ -1300,15 +1300,15 @@ struct redisServer {
     /* Replication (slave) */
     char *masteruser;               /* AUTH with this user and masterauth with master */
     char *masterauth;               /* AUTH with this password with master */
-	/* 副本对应的master地址，直接从配置文件中读取，这个字段不为NULL，说明这个实例是一个副本 */
+	/* 副本中，对应的master地址，直接从配置文件中读取，这个字段不为NULL，说明这个实例是一个副本 */
     char *masterhost;               /* Hostname of master */
-	/* 副本对应的master端口，直接从配置文件中读取 */
+	/* 副本中，对应的master端口，直接从配置文件中读取 */
     int masterport;                 /* Port of master */
     int repl_timeout;               /* Timeout after N seconds of master idle */
 	/* 副本中保存对应master的客户端 */
     client *master;     /* Client that is master for this slave */
     client *cached_master; /* Cached master to be reused for PSYNC. */
-	/* 副本同步向master读写数据超时时间，以秒为单位 */
+	/* 在副本中，同步向master读写数据超时时间，以秒为单位 */
     int repl_syncio_timeout; /* Timeout for synchronous I/O calls */
     int repl_state;          /* Replication status if the instance is a slave */
     off_t repl_transfer_size; /* Size of RDB to read from master during sync. */
@@ -1329,7 +1329,9 @@ struct redisServer {
     /* The following two fields is where we store master PSYNC replid/offset
      * while the PSYNC is in progress. At the end we'll copy the fields into
      * the server->master client structure. */
+	/* 在slave中，保存master runid */
     char master_replid[CONFIG_RUN_ID_SIZE+1];  /* Master PSYNC runid. */
+	/* 在slave中，保存master offset */
     long long master_initial_offset;           /* Master PSYNC offset. */
     int repl_slave_lazy_flush;          /* Lazy FLUSHALL before loading DB? */
     /* Replication script cache. */
