@@ -1539,23 +1539,27 @@ void disklessLoadRestoreBackups(redisDb *backup, int restore, int empty_db_flags
 #define REPL_MAX_WRITTEN_BEFORE_FSYNC (1024*1024*8) /* 8 MB */
 /* slave中调用，用来接收master发过来的数据，用在全同步的情况 */
 void readSyncBulkPayload(connection *conn) {
-    char buf[PROTO_IOBUF_LEN];
+    char buf[PROTO_IOBUF_LEN]; /* 每次最多从网络上读取16KB数据 */
     ssize_t nread, readlen, nwritten;
     int use_diskless_load = useDisklessLoad();
     redisDb *diskless_load_backup = NULL;
+	/* 默认方式是EMPTYDB_NO_FLAGS */
     int empty_db_flags = server.repl_slave_lazy_flush ? EMPTYDB_ASYNC :
                                                         EMPTYDB_NO_FLAGS;
     off_t left;
 
     /* Static vars used to hold the EOF mark, and the last bytes received
      * form the server: when they match, we reached the end of the transfer. */
+	/* 用在diskless方式传输，eofmark保存传输结束的分隔符，lastbytes保存最近接收到的40个字节，
+	 * 用来标识传输是否结束了 */
     static char eofmark[CONFIG_RUN_ID_SIZE];
     static char lastbytes[CONFIG_RUN_ID_SIZE];
-    static int usemark = 0;
+    static int usemark = 0; /* 用来标识是用分隔符标识传输完成，还是用长度来标识数据传输完了 */
 
     /* If repl_transfer_size == -1 we still have to read the bulk length
      * from the master reply. */
     if (server.repl_transfer_size == -1) {
+		/* 首先读取的数据，是确定接下来要收到多少数据，或者收到那个分隔符后，停止传输 */
         if (connSyncReadLine(conn,buf,1024,server.repl_syncio_timeout*1000) == -1) {
             serverLog(LL_WARNING,
                 "I/O error reading bulk count from MASTER: %s",
@@ -1589,6 +1593,10 @@ void readSyncBulkPayload(connection *conn) {
          * At the end of the file the announced delimiter is transmitted. The
          * delimiter is long and random enough that the probability of a
          * collision with the actual file content can be ignored. */
+		/* master通知slave是否数据传输完成了，有两种方式：
+		 * 一种是$<count>，即直接告诉slave接下来要传输多少数据；
+		 * 一种是不能提前知道数据的大小的传输，这时候需要传输一个分隔符，
+		 * 这个分隔符是一个40字节的随机字符串，格式为$EOF:<40 bytes delimiter> */
         if (strncmp(buf+1,"EOF:",4) == 0 && strlen(buf+5) >= CONFIG_RUN_ID_SIZE) {
             usemark = 1;
             memcpy(eofmark,buf+5,CONFIG_RUN_ID_SIZE);
@@ -1601,6 +1609,7 @@ void readSyncBulkPayload(connection *conn) {
                 use_diskless_load? "to parser":"to disk");
         } else {
             usemark = 0;
+			/* 保存接下来要传输收到的字节数 */
             server.repl_transfer_size = strtol(buf+1,NULL,10);
             serverLog(LL_NOTICE,
                 "MASTER <-> REPLICA sync: receiving %lld bytes from master %s",
@@ -1626,6 +1635,7 @@ void readSyncBulkPayload(connection *conn) {
                 /* equivalent to EAGAIN */
                 return;
             }
+			/* 从网络上读数据发生了错误 */
             serverLog(LL_WARNING,"I/O error trying to sync with MASTER: %s",
                 (nread == -1) ? strerror(errno) : "connection lost");
             cancelReplicationHandshake();
@@ -1635,6 +1645,7 @@ void readSyncBulkPayload(connection *conn) {
 
         /* When a mark is used, we want to detect EOF asap in order to avoid
          * writing the EOF mark into the file... */
+		/* 如果是分隔符的方式传输，则首先检查是否是结束分隔符，防止把分隔符的数据写到文件中了 */
         int eof_reached = 0;
 
         if (usemark) {
@@ -1655,6 +1666,7 @@ void readSyncBulkPayload(connection *conn) {
         /* Update the last I/O time for the replication transfer (used in
          * order to detect timeouts during replication), and write what we
          * got from the socket to the dump file on disk. */
+		/* 更新最近一次从socket读取读取数据的时间，以及把收到的数据写入到相应的dump文件中 */
         server.repl_transfer_lastio = server.unixtime;
         if ((nwritten = write(server.repl_transfer_fd,buf,nread)) != nread) {
             serverLog(LL_WARNING,
@@ -1663,9 +1675,10 @@ void readSyncBulkPayload(connection *conn) {
                 (nwritten == -1) ? strerror(errno) : "short write");
             goto error;
         }
-        server.repl_transfer_read += nread;
+        server.repl_transfer_read += nread; /* 保存从socket读取的数据大小 */
 
         /* Delete the last 40 bytes from the file if we reached EOF. */
+		/* 如果是时候分隔符的方式，并且收到的是分隔符，传输结束了，则把从dump文件中删除之前写入的分隔符 */
         if (usemark && eof_reached) {
             if (ftruncate(server.repl_transfer_fd,
                 server.repl_transfer_read - CONFIG_RUN_ID_SIZE) == -1)
@@ -1680,6 +1693,7 @@ void readSyncBulkPayload(connection *conn) {
         /* Sync data on disk from time to time, otherwise at the end of the
          * transfer we may suffer a big delay as the memory buffers are copied
          * into the actual disk. */
+		/* 为了防止最后的fsync操作卡顿，每收到8M，则调用一次fsync接口 */
         if (server.repl_transfer_read >=
             server.repl_transfer_last_fsync_off + REPL_MAX_WRITTEN_BEFORE_FSYNC)
         {
@@ -1692,12 +1706,15 @@ void readSyncBulkPayload(connection *conn) {
 
         /* Check if the transfer is now complete */
         if (!usemark) {
+			/* 使用提前告知长度的方式传输，则比较大小，表示是否传输结束了 */
             if (server.repl_transfer_read == server.repl_transfer_size)
                 eof_reached = 1;
         }
 
         /* If the transfer is yet not complete, we need to read more, so
          * return ASAP and wait for the handler to be called again. */
+
+		/* 数据还没有传输，等待下一次读事件触发，接收数据 */
         if (!eof_reached) return;
     }
 
@@ -1710,15 +1727,24 @@ void readSyncBulkPayload(connection *conn) {
      *
      * 2. Or when we are done reading from the socket to the RDB file, in
      *    such case we want just to read the RDB file in memory. */
+
+	/* 跑到这个地方可能是下面两种情况：
+	 * 一种是，这个副本使用的是diskless方式，也就是他直接从sokcet数据到内存中，
+	 * 不会用临时的RDB文件，这种情况，会阻塞地从socket中读取一切数据。
+	 * 一种是，我们已经从socket中读取完所有的数据了，并且把他们写在临时的RDB文件中，
+	 * 这种情况，我们只需要读取这个RDB文件到内存中。
+	 */
     serverLog(LL_NOTICE, "MASTER <-> REPLICA sync: Flushing old data");
 
     /* We need to stop any AOF rewriting child before flusing and parsing
      * the RDB, otherwise we'll create a copy-on-write disaster. */
+	/* 关闭AOF以及kill相应的子进程，放在出现大量COW的风险，导致内存不够*/
     if (server.aof_state != AOF_OFF) stopAppendOnly();
 
     /* When diskless RDB loading is used by replicas, it may be configured
      * in order to save the current DB instead of throwing it away,
      * so that we can restore it in case of failed transfer. */
+	/* */
     if (use_diskless_load &&
         server.repl_diskless_load == REPL_DISKLESS_LOAD_SWAPDB)
     {
@@ -2490,6 +2516,7 @@ void syncWithMaster(connection *conn) {
     }
 
     /* Setup the non blocking download of the bulk file. */
+	/* 设置读事件回调函数，尝试从master中读取全同步的数据 */
     if (connSetReadHandler(conn, readSyncBulkPayload)
             == C_ERR)
     {
