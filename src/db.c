@@ -377,8 +377,10 @@ robj *dbUnshareStringValue(redisDb *db, robj *key, robj *o) {
  * On success the fuction returns the number of keys removed from the
  * database(s). Otherwise -1 is returned in the specific case the
  * DB number is out of range, and errno is set to EINVAL. */
+/* 删除db中所有的数据，释放相应的内存 */
 long long emptyDbGeneric(redisDb *dbarray, int dbnum, int flags, void(callback)(void*)) {
     int async = (flags & EMPTYDB_ASYNC);
+	/* backup为1，表示释放这个db内存之前，是有备份操作的 */
     int backup = (flags & EMPTYDB_BACKUP); /* Just free the memory, nothing else */
     RedisModuleFlushInfoV1 fi = {REDISMODULE_FLUSHINFO_VERSION,!async,dbnum};
     long long removed = 0;
@@ -390,6 +392,7 @@ long long emptyDbGeneric(redisDb *dbarray, int dbnum, int flags, void(callback)(
 
     /* Pre-flush actions */
     if (!backup) {
+
         /* Fire the flushdb modules event. */
         moduleFireServerEvent(REDISMODULE_EVENT_FLUSHDB,
                               REDISMODULE_SUBEVENT_FLUSHDB_START,
@@ -412,6 +415,7 @@ long long emptyDbGeneric(redisDb *dbarray, int dbnum, int flags, void(callback)(
     for (int j = startdb; j <= enddb; j++) {
         removed += dictSize(dbarray[j].dict);
         if (async) {
+			/* 在后台bio线程释放内存 */
             emptyDbAsync(&dbarray[j]);
         } else {
             dictEmpty(dbarray[j].dict,callback);
@@ -440,6 +444,7 @@ long long emptyDbGeneric(redisDb *dbarray, int dbnum, int flags, void(callback)(
     return removed;
 }
 
+/* 清空db数据，即释放相应的内存 */
 long long emptyDb(int dbnum, int flags, void(callback)(void*)) {
     return emptyDbGeneric(server.db, dbnum, flags, callback);
 }

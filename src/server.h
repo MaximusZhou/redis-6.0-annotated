@@ -356,7 +356,7 @@ typedef long long ustime_t; /* microsecond time type. */
 
 /* Replication diskless load defines */
 #define REPL_DISKLESS_LOAD_DISABLED 0
-#define REPL_DISKLESS_LOAD_WHEN_DB_EMPTY 1
+#define REPL_DISKLESS_LOAD_WHEN_DB_EMPTY 1 /* 在使用diskless的方式时候，原来的db数据清除前要备份 */
 #define REPL_DISKLESS_LOAD_SWAPDB 2
 
 /* Sets operations codes */

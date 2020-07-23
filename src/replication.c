@@ -1439,6 +1439,8 @@ void replicationEmptyDbCallback(void *privdata) {
 /* Once we have a link with the master and the synchroniziation was
  * performed, this function materializes the master client we store
  * at server.master, starting from the specified file descriptor. */
+/* 副本全同步完master所有后，在副本中调用，
+ * 主要用来初始化副本中server.master成员*/
 void replicationCreateMasterClient(connection *conn, int dbid) {
     server.master = createClient(conn);
     if (conn)
@@ -1497,6 +1499,8 @@ static int useDisklessLoad() {
 redisDb *disklessLoadMakeBackups(void) {
     redisDb *backups = zmalloc(sizeof(redisDb)*server.dbnum);
     for (int i=0; i<server.dbnum; i++) {
+		/* 直接结构体之间的复制，
+		 * 但是感觉有bug，因为redisDb结构体也是很多指针，指针复制有问题 TODOQUES ???*/
         backups[i] = server.db[i];
         server.db[i].dict = dictCreate(&dbDictType,NULL);
         server.db[i].expires = dictCreate(&keyptrDictType,NULL);
@@ -1543,7 +1547,8 @@ void readSyncBulkPayload(connection *conn) {
     ssize_t nread, readlen, nwritten;
     int use_diskless_load = useDisklessLoad();
     redisDb *diskless_load_backup = NULL;
-	/* 默认方式是EMPTYDB_NO_FLAGS */
+	/* 默认方式是EMPTYDB_NO_FLAGS，即清空db释放内存的时候，是使用同步释放，即在主线程释放内存，
+	 * 还是异步释放，即在后台bio线程中释放内存 ，默认是在主线程中释放数据的 */
     int empty_db_flags = server.repl_slave_lazy_flush ? EMPTYDB_ASYNC :
                                                         EMPTYDB_NO_FLAGS;
     off_t left;
@@ -1738,34 +1743,38 @@ void readSyncBulkPayload(connection *conn) {
 
     /* We need to stop any AOF rewriting child before flusing and parsing
      * the RDB, otherwise we'll create a copy-on-write disaster. */
-	/* 关闭AOF以及kill相应的子进程，放在出现大量COW的风险，导致内存不够*/
+	/* 关闭AOF以及kill相应的子进程，担心出现大量COW的风险，导致内存不够*/
     if (server.aof_state != AOF_OFF) stopAppendOnly();
 
     /* When diskless RDB loading is used by replicas, it may be configured
      * in order to save the current DB instead of throwing it away,
      * so that we can restore it in case of failed transfer. */
-	/* */
+	/* 在使用diskless的方式时候，原来的db数据清除前要备份 */
     if (use_diskless_load &&
         server.repl_diskless_load == REPL_DISKLESS_LOAD_SWAPDB)
     {
         /* Create a backup of server.db[] and initialize to empty
          * dictionaries */
+		/* 初始化当前db数据，同时把原来的db数据返回到diskless_load_backup保存 */
         diskless_load_backup = disklessLoadMakeBackups();
     }
     /* We call to emptyDb even in case of REPL_DISKLESS_LOAD_SWAPDB
      * (Where disklessLoadMakeBackups left server.db empty) because we
      * want to execute all the auxiliary logic of emptyDb (Namely,
      * fire module events) */
+	/* 清空db，即释放相应db内存数据 */
     emptyDb(-1,empty_db_flags,replicationEmptyDbCallback);
 
     /* Before loading the DB into memory we need to delete the readable
      * handler, otherwise it will get called recursively since
      * rdbLoad() will call the event loop to process events from time to
      * time for non blocking loading. */
+	/* 没看出非阻塞方式加载是怎么可能导致死循环的 TODOQUES */
     connSetReadHandler(conn, NULL);
     serverLog(LL_NOTICE, "MASTER <-> REPLICA sync: Loading DB in memory");
     rdbSaveInfo rsi = RDB_SAVE_INFO_INIT;
     if (use_diskless_load) {
+		/* 直接从网络上读取数据 */
         rio rdb;
         rioInitWithConn(&rdb,conn,server.repl_transfer_size);
 
@@ -1801,16 +1810,19 @@ void readSyncBulkPayload(connection *conn) {
         }
         stopLoading(1);
 
+		/* 执行到这个地方，表示从网络上成功读取所有数据了 */
         /* RDB loading succeeded if we reach this point. */
         if (server.repl_diskless_load == REPL_DISKLESS_LOAD_SWAPDB) {
             /* Delete the backup databases we created before starting to load
              * the new RDB. Now the RDB was loaded with success so the old
              * data is useless. */
+			/* 删除原来备份的数据 */
             disklessLoadRestoreBackups(diskless_load_backup,0,empty_db_flags);
         }
 
         /* Verify the end mark is correct. */
         if (usemark) {
+			/* 验证结束字符串是否正确 */
             if (!rioRead(&rdb,buf,CONFIG_RUN_ID_SIZE) ||
                 memcmp(buf,eofmark,CONFIG_RUN_ID_SIZE) != 0)
             {
@@ -1823,6 +1835,7 @@ void readSyncBulkPayload(connection *conn) {
 
         /* Cleanup and restore the socket to the original state to continue
          * with the normal replication. */
+		/* 释放rio，套接字恢复到非阻塞和超时时间为0的状态 */
         rioFreeConn(&rdb, NULL);
         connNonBlock(conn);
         connRecvTimeout(conn,0);
@@ -1839,6 +1852,7 @@ void readSyncBulkPayload(connection *conn) {
         }
 
         /* Rename rdb like renaming rewrite aof asynchronously. */
+		/* 设置之前保存的临时db文件为正式的db文件 */
         int old_rdb_fd = open(server.rdb_filename,O_RDONLY|O_NONBLOCK);
         if (rename(server.repl_transfer_tmpfile,server.rdb_filename) == -1) {
             serverLog(LL_WARNING,
@@ -1850,8 +1864,10 @@ void readSyncBulkPayload(connection *conn) {
             return;
         }
         /* Close old rdb asynchronously. */
+		/* 异步close或者说删除原来的db文件数据 */
         if (old_rdb_fd != -1) bioCreateBackgroundJob(BIO_CLOSE_FILE,(void*)(long)old_rdb_fd,NULL,NULL);
 
+		/* 从db文件中初始化内存数据 */
         if (rdbLoad(server.rdb_filename,&rsi,RDBFLAGS_REPLICATION) != C_OK) {
             serverLog(LL_WARNING,
                 "Failed trying to load the MASTER synchronization "
@@ -1883,6 +1899,7 @@ void readSyncBulkPayload(connection *conn) {
     }
 
     /* Final setup of the connected slave <- master link */
+	/* 设置master作为slave的客户端 */
     replicationCreateMasterClient(server.repl_transfer_s,rsi.repl_stream_db);
     server.repl_state = REPL_STATE_CONNECTED;
     server.repl_down_since = 0;
@@ -1895,6 +1912,7 @@ void readSyncBulkPayload(connection *conn) {
     /* After a full resynchroniziation we use the replication ID and
      * offset of the master. The secondary ID / offset are cleared since
      * we are starting a new history. */
+	/* 设置实例新的replid，并且清空secondary replid*/
     memcpy(server.replid,server.master->replid,sizeof(server.replid));
     server.master_repl_offset = server.master->reploff;
     clearReplicationId2();
@@ -1903,6 +1921,7 @@ void readSyncBulkPayload(connection *conn) {
      * accumulate the backlog regardless of the fact they have sub-slaves
      * or not, in order to behave correctly if they are promoted to
      * masters after a failover. */
+	/* 副本也要创建backlog，因为故障转移，副本可能升级为master */
     if (server.repl_backlog == NULL) createReplicationBacklog();
     serverLog(LL_NOTICE, "MASTER <-> REPLICA sync: Finished with success");
 
@@ -1914,6 +1933,7 @@ void readSyncBulkPayload(connection *conn) {
     /* Restart the AOF subsystem now that we finished the sync. This
      * will trigger an AOF rewrite, and when done will start appending
      * to the new file. */
+	/* 重新开启AOF状态 */
     if (server.aof_enabled) restartAOFAfterSYNC();
     return;
 

@@ -2149,7 +2149,7 @@ void rdbLoadProgressCallback(rio *r, const void *buf, size_t len) {
 
 /* Load an RDB file from the rio stream 'rdb'. On success C_OK is returned,
  * otherwise C_ERR is returned and 'errno' is set accordingly. */
-/* 从抽象的IO流rio中加载RDB文件 */
+/* 从抽象的IO流rio中加载RDB文件，副本可能调用这个接口从网络上读取数据，来初始化db */
 int rdbLoadRio(rio *rdb, int rdbflags, rdbSaveInfo *rsi) {
     uint64_t dbid;
     int type, rdbver;
