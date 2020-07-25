@@ -308,6 +308,8 @@ typedef long long ustime_t; /* microsecond time type. */
  * In SEND_BULK and ONLINE state the slave receives new updates
  * in its output queue. In the WAIT_BGSAVE states instead the server is waiting
  * to start the next background saving in order to send updates to it. */
+/* 从master一方看，认为客户端副本当前的状态，保存在client->replstate中，
+ * */
 #define SLAVE_STATE_WAIT_BGSAVE_START 6 /* We need to produce a new RDB file. */
 #define SLAVE_STATE_WAIT_BGSAVE_END 7 /* Waiting RDB file creation to finish. */
 #define SLAVE_STATE_SEND_BULK 8 /* Sending RDB file to slave. */
@@ -1280,10 +1282,15 @@ struct redisServer {
     int slaveseldb;                 /* Last SELECTed DB in replication output */
     int repl_ping_slave_period;     /* Master pings the slave every N seconds */
     char *repl_backlog;             /* Replication backlog for partial syncs */
+	/* backlog 循环buff数组的大小 */
     long long repl_backlog_size;    /* Backlog circular buffer size */
+	/* backlog 循环buff中数组实质的长度，不包括被覆盖的 */
     long long repl_backlog_histlen; /* Backlog actual data length */
+	/* backlog循环buff，当前offset，即下一个写入数据的位置 */
     long long repl_backlog_idx;     /* Backlog circular buffer current offset,
                                        that is the next byte will'll write to.*/
+	/* 在副本backlog buffer中，master offset第一个字节的位置，
+	 * 即backlog 循环buff最老的字节相应的offset */
     long long repl_backlog_off;     /* Replication "master offset" of first
                                        byte in the replication backlog buffer.*/
     time_t repl_backlog_time_limit; /* Time without slaves after the backlog
