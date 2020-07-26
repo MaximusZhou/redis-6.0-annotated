@@ -1219,6 +1219,8 @@ void RdbPipeCleanup() {
 }
 
 /* Called in diskless master, when there's data to read from the child's rdb pipe */
+/* 在使用diskless方式的副本中，master通过这个接口从子进程中读取发送过来的数据，
+ * 然后这个接口分发给相应的副本 */
 void rdbPipeReadHandler(struct aeEventLoop *eventLoop, int fd, void *clientData, int mask) {
     UNUSED(mask);
     UNUSED(clientData);
