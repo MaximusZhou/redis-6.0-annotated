@@ -206,7 +206,7 @@ typedef long long ustime_t; /* microsecond time type. */
 
 /* Client flags */
 #define CLIENT_SLAVE (1<<0)   /* This client is a repliaca */
-#define CLIENT_MASTER (1<<1)  /* This client is a master */
+#define CLIENT_MASTER (1<<1)  /* This client is a master，即在副本中，对应的master客户端 */
 #define CLIENT_MONITOR (1<<2) /* This client is a slave monitor, see MONITOR */
 #define CLIENT_MULTI (1<<3)   /* This client is in a MULTI context */
 #define CLIENT_BLOCKED (1<<4) /* The client is waiting in a blocking operation */
@@ -285,7 +285,8 @@ typedef long long ustime_t; /* microsecond time type. */
 /* Slave replication state. Used in server.repl_state for slaves to remember
  * what to do next. */
 #define REPL_STATE_NONE 0 /* No active replication */
-/* REPL_STATE_CONNECT 副本启动时候的状态 */
+/* REPL_STATE_CONNECT 副本启动时候的状态，
+ * 如果配置里面配置了replicaof了，则config.c就设置server.repl_state状态为REPL_STATE_CONNECT */
 #define REPL_STATE_CONNECT 1 /* Must connect to master */
 #define REPL_STATE_CONNECTING 2 /* Connecting to master */
 /* --- Handshake states, must be ordered --- */
@@ -1311,8 +1312,9 @@ struct redisServer {
     char *masterhost;               /* Hostname of master */
 	/* 副本中，对应的master端口，直接从配置文件中读取 */
     int masterport;                 /* Port of master */
+	/* 用来表示副本多长时间没有收到master回复，副本会主动断开master或者请求连接超时*/
     int repl_timeout;               /* Timeout after N seconds of master idle */
-	/* 副本中保存对应master的客户端 */
+	/* 副本中保存对应master的客户端，副本与master连接建立完成后，才会初始化这个字段 */
     client *master;     /* Client that is master for this slave */
     client *cached_master; /* Cached master to be reused for PSYNC. */
 	/* 在副本中，同步向master读写数据超时时间，以秒为单位 */

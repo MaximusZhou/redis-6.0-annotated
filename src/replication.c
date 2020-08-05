@@ -2624,7 +2624,8 @@ write_error: /* Handle sendSynchronousCommand(SYNC_CMD_WRITE) errors. */
     goto error;
 }
 
-/* 副本通过调用这个接口，开始尝试连接master */
+/* 副本通过调用这个接口，开始尝试连接master
+ * 这个接口在replicationCron调用 */
 int connectWithMaster(void) {
     server.repl_transfer_s = server.tls_replication ? connCreateTLS() : connCreateSocket();
 	/* 以非阻塞的方式请求连接master，并且设置可写事件的回调函数为syncWithMaster */
@@ -2647,6 +2648,9 @@ int connectWithMaster(void) {
  * in progress to undo it.
  * Never call this function directly, use cancelReplicationHandshake() instead.
  */
+/*
+ * 副本断开与master的网络连接
+ */
 void undoConnectWithMaster(void) {
     connClose(server.repl_transfer_s);
     server.repl_transfer_s = NULL;
@@ -2655,6 +2659,7 @@ void undoConnectWithMaster(void) {
 /* Abort the async download of the bulk dataset while SYNC-ing with master.
  * Never call this function directly, use cancelReplicationHandshake() instead.
  */
+/* 终止正在进行同步的数据，除了关闭连接外，还需要关闭和删除相关的文件 */
 void replicationAbortSyncTransfer(void) {
     serverAssert(server.repl_state == REPL_STATE_TRANSFER);
     undoConnectWithMaster();
@@ -2678,6 +2683,7 @@ void replicationAbortSyncTransfer(void) {
 /* 取消副本与原来master的连接 */
 int cancelReplicationHandshake(void) {
     if (server.repl_state == REPL_STATE_TRANSFER) {
+		/* 正在从master接收rdb文件 */
         replicationAbortSyncTransfer();
         server.repl_state = REPL_STATE_CONNECT;
     } else if (server.repl_state == REPL_STATE_CONNECTING ||
@@ -2921,10 +2927,13 @@ void roleCommand(client *c) {
 /* Send a REPLCONF ACK command to the master to inform it about the current
  * processed offset. If we are not connected with a master, the command has
  * no effects. */
+/* 给master发送 REPLCONF ACK命令，告知master当前副本的offset */
 void replicationSendAck(void) {
     client *c = server.master;
 
     if (c != NULL) {
+		/* 只要在CLIENT_MASTER_FORCE_REPLY这标识上，副本才能给master客户端发送数据，
+		 * 连接建立后，副本中，通过master客户端发送数据给master，当前只能发送REPLCONF ACK数据 */
         c->flags |= CLIENT_MASTER_FORCE_REPLY;
         addReplyArrayLen(c,3);
         addReplyBulkCString(c,"REPLCONF");
@@ -3341,7 +3350,13 @@ long long replicationGetSlaveOffset(void) {
 /* --------------------------- REPLICATION CRON  ---------------------------- */
 
 /* Replication cron function, called 1 time per second. */
-/* 在serverCron中，每秒调用一次这个接口 */
+/* 在serverCron中，每秒调用一次这个接口，
+ * 这个接口主要工作有：
+ * 1. 副本做各种超时处理，主动断开连接。
+ * 2. 副本每秒给mastrer回复一个ACK。
+ *
+ *
+ * */
 void replicationCron(void) {
     static long long replication_cron_loops = 0;
 
@@ -3351,6 +3366,8 @@ void replicationCron(void) {
          slaveIsInHandshakeState()) &&
          (time(NULL)-server.repl_transfer_lastio) > server.repl_timeout)
     {
+		/* 开始请求连接master超时，或者是
+		 * 正在连接，但是长时间没有心跳了，则认为超时了，副本主动断开 */
         serverLog(LL_WARNING,"Timeout connecting to the MASTER...");
         cancelReplicationHandshake();
     }
@@ -3359,6 +3376,8 @@ void replicationCron(void) {
     if (server.masterhost && server.repl_state == REPL_STATE_TRANSFER &&
         (time(NULL)-server.repl_transfer_lastio) > server.repl_timeout)
     {
+		/* 从master同步数据超时，
+		 * 如果是因为存盘卡主导致的，因为提高repl-timeout中的值 */
         serverLog(LL_WARNING,"Timeout receiving bulk data from MASTER... If the problem persists try to set the 'repl-timeout' parameter in redis.conf to a larger value.");
         cancelReplicationHandshake();
     }
@@ -3367,6 +3386,7 @@ void replicationCron(void) {
     if (server.masterhost && server.repl_state == REPL_STATE_CONNECTED &&
         (time(NULL)-server.master->lastinteraction) > server.repl_timeout)
     {
+		/* 已经连接上了，心跳超时 */
         serverLog(LL_WARNING,"MASTER timeout: no data nor PING received...");
         freeClient(server.master);
     }
@@ -3375,7 +3395,7 @@ void replicationCron(void) {
     if (server.repl_state == REPL_STATE_CONNECT) {
         serverLog(LL_NOTICE,"Connecting to MASTER %s:%d",
             server.masterhost, server.masterport);
-		/* 副本开始连接master */
+		/* 副本开始连接master，才用的非阻塞的方式 */
         if (connectWithMaster() == C_OK) {
             serverLog(LL_NOTICE,"MASTER <-> REPLICA sync started");
         }
@@ -3384,6 +3404,8 @@ void replicationCron(void) {
     /* Send ACK to master from time to time.
      * Note that we do not send periodic acks to masters that don't
      * support PSYNC and replication offsets. */
+	/* 连接建立后，则每隔1秒发送一个ACK给master，
+	 * 如果master不支持PSYNC，则副本不会定期发送ACK */
     if (server.masterhost && server.master &&
         !(server.master->flags & CLIENT_PRE_PSYNC))
         replicationSendAck();
@@ -3392,6 +3414,7 @@ void replicationCron(void) {
      * So slaves can implement an explicit timeout to masters, and will
      * be able to detect a link disconnection even if the TCP connection
      * will not actually go down. */
+	/* 如果当前redis实例，有slave，这定时给这些slave发送PING命令 */
     listIter li;
     listNode *ln;
     robj *ping_argv[1];
