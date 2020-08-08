@@ -1281,15 +1281,17 @@ struct redisServer {
     /* Replication (master) */
     char replid[CONFIG_RUN_ID_SIZE+1];  /* My current replication ID. */
     char replid2[CONFIG_RUN_ID_SIZE+1]; /* replid inherited from master*/
+	/* 保存副本全局的offset，一直往前累积 */
     long long master_repl_offset;   /* My current replication offset */
     long long second_replid_offset; /* Accept offsets up to this for replid2. */
     int slaveseldb;                 /* Last SELECTed DB in replication output */
 	/* 每隔repl_ping_slave_period秒给slave发送一个ping */
     int repl_ping_slave_period;     /* Master pings the slave every N seconds */
+	/* master保存用于同步给副本的数据，是一个循环buff */
     char *repl_backlog;             /* Replication backlog for partial syncs */
 	/* backlog 循环buff数组的大小 */
     long long repl_backlog_size;    /* Backlog circular buffer size */
-	/* backlog 循环buff中数组实质的长度，不包括被覆盖的 */
+	/* backlog 循环buff中数据实质的长度，不包括被覆盖的 */
     long long repl_backlog_histlen; /* Backlog actual data length */
 	/* backlog循环buff，当前offset，即下一个写入数据的位置 */
     long long repl_backlog_idx;     /* Backlog circular buffer current offset,

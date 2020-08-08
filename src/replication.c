@@ -48,6 +48,8 @@ int cancelReplicationHandshake(void);
 /* We take a global flag to remember if this instance generated an RDB
  * because of replication, so that we can remove the RDB file in case
  * the instance is configured to have no persistence. */
+/* 用来标识一个redis实例，是否因为副本同步，生成相应了RDB文件，
+ * 如果为1，表示生成了相应了RDB文件，如果实例配置为不存盘，则需要删除生成的RDB文件 */
 int RDBGeneratedByReplication = 0;
 
 /* --------------------------- Utility functions ---------------------------- */
@@ -56,10 +58,12 @@ int RDBGeneratedByReplication = 0;
  * pair. Mostly useful for logging, since we want to log a slave using its
  * IP address and its listening port which is more clear for the user, for
  * example: "Closing connection with replica 10.1.2.3:6380". */
+/* 生成相应的副本名字，返回值通常用于记录log */
 char *replicationGetSlaveName(client *c) {
     static char buf[NET_PEER_ID_LEN];
     char ip[NET_IP_STR_LEN];
 
+	/* 给一个字符数组，赋值为空字符串的方法 */
     ip[0] = '\0';
     buf[0] = '\0';
     if (c->slave_ip[0] != '\0' ||
@@ -85,14 +89,20 @@ char *replicationGetSlaveName(client *c) {
  * by using the fact that if there is another instance of the same file open,
  * the foreground unlink() will not really do anything, and deleting the
  * file will only happen once the last reference is lost. */
+/* 在后台线程中unlink一个文件，实质目的是在后台线程删除这个文件，防止阻塞，方法是：
+ * 首先打开这个文件，然后unlik文件，因为之前打开了文件，还没有关闭，因此这个文件还不会删除，
+ * 然后在后台线程中关闭刚才打开的文件，因为文件最后一个引用被删除了，
+ * 因此关闭文件的时候，才真正删除文件 */
 int bg_unlink(const char *filename) {
     int fd = open(filename,O_RDONLY|O_NONBLOCK);
     if (fd == -1) {
         /* Can't open the file? Fall back to unlinking in the main thread. */
+		/* 打开文件失败，则直接在主线程中删除文件 */
         return unlink(filename);
     } else {
         /* The following unlink() will not do anything since file
          * is still open. */
+		/* 由于这个文件还在被引用中，因此unlink操作不会实质删除文件 */
         int retval = unlink(filename);
         if (retval == -1) {
             /* If we got an unlink error, we just return it, closing the
@@ -109,7 +119,7 @@ int bg_unlink(const char *filename) {
 
 /* ---------------------------------- MASTER -------------------------------- */
 
-/* 一个实例，只会初始化一次backlog，
+/* 一个实例，只会初始化一次backlog，即分配buff内存，初始化相关的数据
  * 对于master是在收到第一个副本全同步请求的时候,
  * 对于slave是在收到CONTINUE命令的时候 */
 void createReplicationBacklog(void) {
@@ -151,6 +161,7 @@ void resizeReplicationBacklog(long long newsize) {
     }
 }
 
+/* 释放相应的backlog空间 */
 void freeReplicationBacklog(void) {
     serverAssert(listLength(server.slaves) == 0);
     zfree(server.repl_backlog);
@@ -161,6 +172,7 @@ void freeReplicationBacklog(void) {
  * This function also increments the global replication offset stored at
  * server.master_repl_offset, because there is no case where we want to feed
  * the backlog without incrementing the offset. */
+/* master向副本backlog buff中增加数据 */
 void feedReplicationBacklog(void *ptr, size_t len) {
     unsigned char *p = ptr;
 
@@ -168,11 +180,13 @@ void feedReplicationBacklog(void *ptr, size_t len) {
 
     /* This is a circular buffer, so write as much data we can at every
      * iteration and rewind the "idx" index if we reach the limit. */
+	/* backlog buff 是一个循环buff */
     while(len) {
         size_t thislen = server.repl_backlog_size - server.repl_backlog_idx;
         if (thislen > len) thislen = len;
         memcpy(server.repl_backlog+server.repl_backlog_idx,p,thislen);
         server.repl_backlog_idx += thislen;
+		/* 回到buff开始位置继续写数据 */
         if (server.repl_backlog_idx == server.repl_backlog_size)
             server.repl_backlog_idx = 0;
         len -= thislen;
@@ -182,6 +196,7 @@ void feedReplicationBacklog(void *ptr, size_t len) {
     if (server.repl_backlog_histlen > server.repl_backlog_size)
         server.repl_backlog_histlen = server.repl_backlog_size;
     /* Set the offset of the first byte we have in the backlog. */
+	/* 设置backlog中第一个字节在buff中的offset */
     server.repl_backlog_off = server.master_repl_offset -
                               server.repl_backlog_histlen + 1;
 }
@@ -1017,8 +1032,8 @@ void putSlaveOnline(client *slave) {
  * to take RDB files around, this violates certain policies in certain
  * environments. */
 /*
- * corn中定时调用这个接口，尝试清除副本的RDB文件，这个副本配置成需要删除同步的rdb文件，
- * 并且配置为不需要存盘，同时配置后，才尝试清除。
+ * corn中定时调用这个接口，尝试清除因为副本生成的RDB文件，这个实例配置成需要删除同步的rdb文件，
+ * 并且配置为不需要存盘，同时配置后，才尝试清除
  */
 void removeRDBUsedToSyncReplicas(void) {
     /* If the feature is disabled, return ASAP but also clear the
@@ -3596,7 +3611,7 @@ void replicationCron(void) {
 
     /* Remove the RDB file used for replication if Redis is not running
      * with any persistence. */
-	/* 尝试删除副本的RDB文件，如果这个副本配置成无须存盘的，但是又有RDB文件，则尝试删除 */
+	/* 尝试删除因为副本生成的RDB文件，如果这个实例配置成无须存盘的，但是又有RDB文件，因此尝试删除 */
     removeRDBUsedToSyncReplicas();
 
     /* Refresh the number of slaves with lag <= min-slaves-max-lag. */
