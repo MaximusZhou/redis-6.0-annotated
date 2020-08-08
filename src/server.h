@@ -311,7 +311,9 @@ typedef long long ustime_t; /* microsecond time type. */
  * to start the next background saving in order to send updates to it. */
 /* 从master一方看，认为客户端副本当前的状态，保存在client->replstate中，
  * */
+// 这个slave需要开始bgsave
 #define SLAVE_STATE_WAIT_BGSAVE_START 6 /* We need to produce a new RDB file. */
+// slave开始执行了bgsave，在等待bgsave完成
 #define SLAVE_STATE_WAIT_BGSAVE_END 7 /* Waiting RDB file creation to finish. */
 #define SLAVE_STATE_SEND_BULK 8 /* Sending RDB file to slave. */
 #define SLAVE_STATE_ONLINE 9 /* RDB file transmitted, sending just updates. */
@@ -1235,6 +1237,7 @@ struct redisServer {
     long long dirty_before_bgsave;  /* Used to restore dirty on failed BGSAVE */
     pid_t rdb_child_pid;            /* PID of RDB saving child */
     struct saveparam *saveparams;   /* Save points array for RDB */
+	/* 保存RDB存盘的方式，配置的参数个数 */
     int saveparamslen;              /* Number of saving points */
     char *rdb_filename;             /* Name of RDB file */
     int rdb_compression;            /* Use compression in RDB? */
@@ -1281,6 +1284,7 @@ struct redisServer {
     long long master_repl_offset;   /* My current replication offset */
     long long second_replid_offset; /* Accept offsets up to this for replid2. */
     int slaveseldb;                 /* Last SELECTed DB in replication output */
+	/* 每隔repl_ping_slave_period秒给slave发送一个ping */
     int repl_ping_slave_period;     /* Master pings the slave every N seconds */
     char *repl_backlog;             /* Replication backlog for partial syncs */
 	/* backlog 循环buff数组的大小 */

@@ -207,7 +207,12 @@ void feedReplicationBacklogWithObject(robj *o) {
  * as well. This function is used if the instance is a master: we use
  * the commands received by our clients in order to create the replication
  * stream. Instead if the instance is a slave and has sub-slaves attached,
- * we use replicationFeedSlavesFromMaster() */
+ * we use replicationFeedSlavesFromMasterStream() */
+/*
+ * 这个接口用来把master写操作修改，同步给slave，如果slave相关修改要同步给sub-slave
+ * 调用的是replicationFeedSlavesFromMasterStream
+ * 同时这个命令也用来给slave发送ping命令
+ */
 void replicationFeedSlaves(list *slaves, int dictid, robj **argv, int argc) {
     listNode *ln;
     listIter li;
@@ -219,6 +224,7 @@ void replicationFeedSlaves(list *slaves, int dictid, robj **argv, int argc) {
      * propagate *identical* replication stream. In this way this slave can
      * advertise the same replication ID as the master (since it shares the
      * master replication history and has the same backlog and offsets). */
+	/* 需要top-master才能调用这个接口 */
     if (server.masterhost != NULL) return;
 
     /* If there aren't slaves, and there is no backlog buffer to populate,
@@ -346,6 +352,7 @@ void showLatestBacklog(void) {
 
 /* This function is used in order to proxy what we receive from our master
  * to our sub-slaves. */
+/* slave 给 sub-slave发送命令使用这个接口，slave执行从master收到的命令后调用 */
 #include <ctype.h>
 void replicationFeedSlavesFromMasterStream(list *slaves, char *buf, size_t buflen) {
     listNode *ln;
@@ -1009,6 +1016,10 @@ void putSlaveOnline(client *slave) {
  * without any persistence. We don't want instances without persistence
  * to take RDB files around, this violates certain policies in certain
  * environments. */
+/*
+ * corn中定时调用这个接口，尝试清除副本的RDB文件，这个副本配置成需要删除同步的rdb文件，
+ * 并且配置为不需要存盘，同时配置后，才尝试清除。
+ */
 void removeRDBUsedToSyncReplicas(void) {
     /* If the feature is disabled, return ASAP but also clear the
      * RDBGeneratedByReplication flag in case it was set. Otherwise if the
@@ -3089,7 +3100,8 @@ void replicationResurrectCachedMaster(connection *conn) {
  * enough connected slaves with the specified lag (or less). */
 /* 重新计算延迟较小的slave的数目，
  * 如果非常多的slave延迟非常大，master会阻止新的写操作，
- * 这个延迟用时间来定义的 */
+ * 这个延迟用时间来定义的，
+ * 这个接口会在cron中定时调用 */
 void refreshGoodSlavesCount(void) {
     listIter li;
     listNode *ln;
@@ -3354,7 +3366,7 @@ long long replicationGetSlaveOffset(void) {
  * 这个接口主要工作有：
  * 1. 副本做各种超时处理，主动断开连接。
  * 2. 副本每秒给mastrer回复一个ACK。
- *
+ * 3. 检测超时的slave，主动关闭超时的slave
  *
  * */
 void replicationCron(void) {
@@ -3420,6 +3432,7 @@ void replicationCron(void) {
     robj *ping_argv[1];
 
     /* First, send PING according to ping_slave_period. */
+	/* 周期给slave发送ping命令 */
     if ((replication_cron_loops % server.repl_ping_slave_period) == 0 &&
         listLength(server.slaves))
     {
@@ -3454,6 +3467,9 @@ void replicationCron(void) {
      * last interaction timer preventing a timeout. In this case we ignore the
      * ping period and refresh the connection once per second since certain
      * timeouts are set at a few seconds (example: PSYNC response). */
+	/* 在master发送rdb文件之前，给所有的slave发送一个换行符，此时的slave在等待master创建RDB文件,
+	 * 可以在完成同步之前，master给slave的心跳逻辑，告知slave，相应的master还在线，
+	 * 防止slave本身超时主动关闭连接了 */
     listRewind(server.slaves,&li);
     while((ln = listNext(&li))) {
         client *slave = ln->value;
@@ -3469,6 +3485,7 @@ void replicationCron(void) {
     }
 
     /* Disconnect timedout slaves. */
+	/* 断开超时的slave连接 */
     if (listLength(server.slaves)) {
         listIter li;
         listNode *ln;
@@ -3494,6 +3511,8 @@ void replicationCron(void) {
      * without sub-slaves attached should still accumulate data into the
      * backlog, in order to reply to PSYNC queries if they are turned into
      * masters after a failover. */
+	/* 对于master长时间没有slave，并且有相应的replication backlog，
+	 * 则删除相应的replication backlog*/
     if (listLength(server.slaves) == 0 && server.repl_backlog_time_limit &&
         server.repl_backlog && server.masterhost == NULL)
     {
@@ -3541,6 +3560,10 @@ void replicationCron(void) {
      * In case of diskless replication, we make sure to wait the specified
      * number of seconds (according to configuration) so that other slaves
      * have the time to arrive before we start streaming. */
+	/*
+	 * 没有子进程，尝试为等待开启bgsave的slave，开启BGSAVE，
+	 * 对应diskless sync，则等待指定时间后才开启
+	 */
     if (!hasActiveChildProcess()) {
         time_t idle, max_idle = 0;
         int slaves_waiting = 0;
@@ -3573,6 +3596,7 @@ void replicationCron(void) {
 
     /* Remove the RDB file used for replication if Redis is not running
      * with any persistence. */
+	/* 尝试删除副本的RDB文件，如果这个副本配置成无须存盘的，但是又有RDB文件，则尝试删除 */
     removeRDBUsedToSyncReplicas();
 
     /* Refresh the number of slaves with lag <= min-slaves-max-lag. */
