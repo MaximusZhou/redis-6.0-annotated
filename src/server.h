@@ -1284,6 +1284,7 @@ struct redisServer {
 	/* 保存副本全局的offset，一直往前累积 */
     long long master_repl_offset;   /* My current replication offset */
     long long second_replid_offset; /* Accept offsets up to this for replid2. */
+	/* 最近同步给slave，是那个db的数据 */
     int slaveseldb;                 /* Last SELECTed DB in replication output */
 	/* 每隔repl_ping_slave_period秒给slave发送一个ping */
     int repl_ping_slave_period;     /* Master pings the slave every N seconds */

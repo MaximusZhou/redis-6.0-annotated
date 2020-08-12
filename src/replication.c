@@ -224,9 +224,10 @@ void feedReplicationBacklogWithObject(robj *o) {
  * stream. Instead if the instance is a slave and has sub-slaves attached,
  * we use replicationFeedSlavesFromMasterStream() */
 /*
- * 这个接口用来把master写操作修改，同步给slave，如果slave相关修改要同步给sub-slave
- * 调用的是replicationFeedSlavesFromMasterStream
- * 同时这个命令也用来给slave发送ping命令
+ * 这个接口用来把master写操作修改，同步给slave，如果slave相关修改要同步给sub-slave，
+ * 调用的是replicationFeedSlavesFromMasterStream，
+ * 同时这个命令也用来给slave发送ping命令，
+ * 其主要工作就是：把操作保存到backlog中，同时发送给所有的slave
  */
 void replicationFeedSlaves(list *slaves, int dictid, robj **argv, int argc) {
     listNode *ln;
@@ -239,7 +240,7 @@ void replicationFeedSlaves(list *slaves, int dictid, robj **argv, int argc) {
      * propagate *identical* replication stream. In this way this slave can
      * advertise the same replication ID as the master (since it shares the
      * master replication history and has the same backlog and offsets). */
-	/* 需要top-master才能调用这个接口 */
+	/* 需要top-master才能调用这个接口，slave不能调用这个接口的 */
     if (server.masterhost != NULL) return;
 
     /* If there aren't slaves, and there is no backlog buffer to populate,
@@ -251,6 +252,7 @@ void replicationFeedSlaves(list *slaves, int dictid, robj **argv, int argc) {
 
     /* Send SELECT command to every slave if needed. */
     if (server.slaveseldb != dictid) {
+		/* 当前修改的数据的db 与 上一次修改数据的db不一致，需要发送SELECT命令 */
         robj *selectcmd;
 
         /* For a few DBs we have pre-computed SELECT command. */
@@ -283,6 +285,7 @@ void replicationFeedSlaves(list *slaves, int dictid, robj **argv, int argc) {
     server.slaveseldb = dictid;
 
     /* Write the command to the replication backlog if any. */
+	/* 把操作写到副本的backlog缓存中，格式为RESP格式的方式放到缓存中 */
     if (server.repl_backlog) {
         char aux[LONG_STR_SIZE+3];
 
@@ -310,6 +313,7 @@ void replicationFeedSlaves(list *slaves, int dictid, robj **argv, int argc) {
     }
 
     /* Write the command to every slave. */
+	/* 把命令发送给每一个slave */
     listRewind(slaves,&li);
     while((ln = listNext(&li))) {
         client *slave = ln->value;
@@ -335,6 +339,10 @@ void replicationFeedSlaves(list *slaves, int dictid, robj **argv, int argc) {
  * wrong with the replication protocol: the goal is to peek into the
  * replication backlog and show a few final bytes to make simpler to
  * guess what kind of bug it could be. */
+/*
+ * 调试接口，用在出错的时候，保存backlog中的信息，到日志中，
+ * 方便查证问题
+ */
 void showLatestBacklog(void) {
     if (server.repl_backlog == NULL) return;
 
@@ -343,6 +351,7 @@ void showLatestBacklog(void) {
         dumplen = server.repl_backlog_histlen;
 
     /* Identify the first byte to dump. */
+	/* 计算第一个要dump的字节的位置下标 */
     long long idx =
       (server.repl_backlog_idx + (server.repl_backlog_size - dumplen)) %
        server.repl_backlog_size;
@@ -367,7 +376,8 @@ void showLatestBacklog(void) {
 
 /* This function is used in order to proxy what we receive from our master
  * to our sub-slaves. */
-/* slave 给 sub-slave发送命令使用这个接口，slave执行从master收到的命令后调用 */
+/* slave 给 sub-slave发送命令使用这个接口，slave执行从master收到的命令后调用,
+ * 把相应的命令转发给sub-slave */
 #include <ctype.h>
 void replicationFeedSlavesFromMasterStream(list *slaves, char *buf, size_t buflen) {
     listNode *ln;
@@ -376,6 +386,7 @@ void replicationFeedSlavesFromMasterStream(list *slaves, char *buf, size_t bufle
     /* Debugging: this is handy to see the stream sent from master
      * to slaves. Disabled with if(0). */
     if (0) {
+		/* %z用来修饰u，要来打印size_t或者ssize_t的类型 */
         printf("%zu:",buflen);
         for (size_t j = 0; j < buflen; j++) {
             printf("%c", isprint(buf[j]) ? buf[j] : '.');
@@ -394,6 +405,8 @@ void replicationFeedSlavesFromMasterStream(list *slaves, char *buf, size_t bufle
     }
 }
 
+/* 把redis实例收到的所有命令都转发monitors中所有的客户端，即监控或者管理的客户端，
+ * 主要是转发对应命令的客户端ip端口地址信息，以及其执行的命令参数 */
 void replicationFeedMonitors(client *c, list *monitors, int dictid, robj **argv, int argc) {
     listNode *ln;
     listIter li;
@@ -492,6 +505,11 @@ long long addReplyReplicationBacklog(client *c, long long offset) {
  * from the slave. The returned value is only valid immediately after
  * the BGSAVE process started and before executing any other command
  * from clients. */
+/* 
+ * 作为PSYNC命令的返回值，告诉slave当前的offset，
+ * 这个值只要在接收新的客户端命令前，执行bgsave进程才有效，
+ * 否则接收到新的客户端命令，这个值可能就被修改了
+ */
 long long getPsyncInitialOffset(void) {
     return server.master_repl_offset;
 }
@@ -512,20 +530,26 @@ long long getPsyncInitialOffset(void) {
  * Normally this function should be called immediately after a successful
  * BGSAVE for replication was started, or when there is one already in
  * progress that we attached our slave to. */
-/* 把SLAVE客户端状态设置为SLAVE_STATE_WAIT_BGSAVE_END，等待BGSAVE完成 */
+/* 这个接口在开启BGSAVE后，马上调用，或者新的slave复用正在生成RDB的slave时候调用，
+ * 把SLAVE客户端状态设置为SLAVE_STATE_WAIT_BGSAVE_END，等待BGSAVE完成 */
 int replicationSetupSlaveForFullResync(client *slave, long long offset) {
     char buf[128];
     int buflen;
 
-    slave->psync_initial_offset = offset;
+    slave->psync_initial_offset = offset; // 方便后面的slave复用
     slave->replstate = SLAVE_STATE_WAIT_BGSAVE_END;
     /* We are going to accumulate the incremental changes for this
      * slave as well. Set slaveseldb to -1 in order to force to re-emit
      * a SELECT statement in the replication stream. */
+	/*
+	 * 为了给这个slave累积后面的修改，设置为-1，强制在这些修改前，加上SELECT语句，
+	 * 这样就知道后面的修改是对那个db操作，否则的话，不知道接下来的操作是那个db操作的
+	 */
     server.slaveseldb = -1;
 
     /* Don't send this reply to slaves that approached us with
      * the old SYNC command. */
+	/* 如果slave是旧的版本，不支持psync，则不用回复 */
     if (!(slave->flags & CLIENT_PRE_PSYNC)) {
         buflen = snprintf(buf,sizeof(buf),"+FULLRESYNC %s %lld\r\n",
                           server.replid,offset);
@@ -543,7 +567,7 @@ int replicationSetupSlaveForFullResync(client *slave, long long offset) {
  * On success return C_OK, otherwise C_ERR is returned and we proceed
  * with the usual full resync. */
 /*
- * master中真正响应PSYNC命令的函数，用来处理部分同步，
+ * master中真正响应PSYNC命令的函数(比如来自slave发送这个pysnc命令)，用来处理部分同步，
  * 如果成功，则返回C_OK，否则返回C_ERR，表示接下来需要全同步
  */
 int masterTryPartialResynchronization(client *c) {
@@ -565,11 +589,13 @@ int masterTryPartialResynchronization(client *c) {
      *
      * Note that there are two potentially valid replication IDs: the ID1
      * and the ID2. The ID2 however is only valid up to a specific offset. */
+	/* slave发过来的replid与id1或者id2都不匹配，或者请求的offset太大了，
+	 * 则都需要进行全同步了 */
+	// TODOQUES 这个地方psync_offset 和 server.second_replid_offset 具体含义是什么，为什么用这两个值
     if (strcasecmp(master_replid, server.replid) &&
         (strcasecmp(master_replid, server.replid2) ||
          psync_offset > server.second_replid_offset))
     {
-		/* replid不匹配，或者请求的offset太大了 */
         /* Run id "?" is used by slaves that want to force a full resync. */
         if (master_replid[0] != '?') {
             if (strcasecmp(master_replid, server.replid) &&
@@ -611,11 +637,14 @@ int masterTryPartialResynchronization(client *c) {
      * 2) Inform the client we can continue with +CONTINUE
      * 3) Send the backlog data (from the offset to the end) to the slave. */
 	/*
-	 * 表示可以部分同步
+	 * 表示可以部分同步:
+	 * 1. 设置对应客户端为slave
+	 * 2. 使用命令CONTINUE通知slave
+	 * 3. 发送backlog 数据给slave
 	 */
     c->flags |= CLIENT_SLAVE;
     c->replstate = SLAVE_STATE_ONLINE;
-    c->repl_ack_time = server.unixtime;
+    c->repl_ack_time = server.unixtime; // 设置对应客户端slave最近一次ack的时间
     c->repl_put_online_on_ack = 0;
     listAddNodeTail(server.slaves,c);
     /* We can't use the connection buffers since they are used to accumulate
@@ -631,6 +660,7 @@ int masterTryPartialResynchronization(client *c) {
         freeClientAsync(c);
         return C_OK;
     }
+	// 把backlog中数据，发送给对应的slave
     psync_len = addReplyReplicationBacklog(c,psync_offset);
     serverLog(LL_NOTICE,
         "Partial resynchronization request from %s accepted. Sending %lld bytes of backlog starting from offset %lld.",
